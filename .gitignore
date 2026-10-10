@@ -5,3 +5,6 @@ managed_components/
 dependencies.lock
 .vscode/
 compile_commands.json
+
+# Machine-local ESP-IDF Installation Manager config (absolute paths).
+eim_config.toml
