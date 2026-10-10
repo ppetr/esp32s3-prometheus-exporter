@@ -2,7 +2,20 @@ cmake_minimum_required(VERSION 3.16)
 
 # Tier 1 host-native unit tests (DESIGN.md §12.2). Build for the ESP-IDF
 # Linux target: idf.py --preview set-target linux build
-set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../components")
+#
+# Only list components with no hardware-only dependencies (no "driver", "usb",
+# "esp_eth", "esp_http_server", ...) here — those can't build for the Linux
+# target. Add to this list as more logic-only pieces get tests (lua_sandbox,
+# channel_source, the http_api request-handling logic once it's split from
+# the esp_http_server glue).
+set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../components/metrics_store")
+
+# EXTRA_COMPONENT_DIRS otherwise forces a non-minimal build that expands
+# requirements for every component under $IDF_PATH/components, which hits an
+# upstream v6.1 bug (esp_driver_ana_cmpr REQUIRES esp_hal_ana_cmpr without a
+# linux-target guard, while esp_hal_ana_cmpr itself returns early on linux).
+# Restricting to "main" keeps the build to main's actual transitive REQUIRES.
+set(COMPONENTS main)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(test_host)
