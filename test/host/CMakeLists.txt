@@ -5,10 +5,12 @@ cmake_minimum_required(VERSION 3.16)
 #
 # Only list components with no hardware-only dependencies (no "driver", "usb",
 # "esp_eth", "esp_http_server", ...) here — those can't build for the Linux
-# target. Add to this list as more logic-only pieces get tests (lua_sandbox,
-# channel_source, the http_api request-handling logic once it's split from
-# the esp_http_server glue).
-set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../components/metrics_store")
+# target. Add to this list as more logic-only pieces get tests (channel_source,
+# the http_api request-handling logic once it's split from the esp_http_server
+# glue).
+set(EXTRA_COMPONENT_DIRS
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/metrics_store"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/lua_sandbox")
 
 # EXTRA_COMPONENT_DIRS otherwise forces a non-minimal build that expands
 # requirements for every component under $IDF_PATH/components, which hits an
@@ -25,5 +27,10 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # histogram buckets.
 idf_build_set_property(COMPILE_OPTIONS "-fsanitize=address,undefined" APPEND)
 idf_build_set_property(LINK_OPTIONS "-fsanitize=address,undefined" APPEND)
+
+# lmathlib.c (via lua_sandbox's espressif/lua dependency) needs libm
+# (log10f et al.) on the Linux target; the esp32s3 build gets this via the
+# Xtensa toolchain spec automatically, this one doesn't.
+idf_build_set_property(LINK_OPTIONS "-lm" APPEND)
 
 project(test_host)

@@ -23,6 +23,19 @@ extern void test_metrics_store_histogram_reinit_resets_counts(void);
 extern void test_metrics_store_histogram_omitted_when_stale(void);
 extern void test_metrics_store_all_metric_slots_can_be_histograms(void);
 
+extern void test_lua_sandbox_create_destroy_basic(void);
+extern void test_lua_sandbox_check_syntax_accepts_valid_source(void);
+extern void test_lua_sandbox_check_syntax_rejects_invalid_source(void);
+extern void test_lua_sandbox_stripped_globals_are_absent(void);
+extern void test_lua_sandbox_os_io_debug_package_not_loaded(void);
+extern void test_lua_sandbox_restricted_libraries_are_usable(void);
+extern void test_lua_sandbox_resume_without_load_returns_invalid_state(void);
+extern void test_lua_sandbox_stream_parser_yields_and_resumes(void);
+extern void test_lua_sandbox_poll_parser_yield_ms(void);
+extern void test_lua_sandbox_load_replaces_previous_coroutine(void);
+extern void test_lua_sandbox_instruction_hook_fires_on_runaway_script(void);
+extern void test_lua_sandbox_memory_cap_enforced(void);
+
 // UNITY_END() returns the failure count; exit with it so the Linux-target
 // binary terminates instead of idling in the FreeRTOS scheduler (DESIGN.md
 // §12.2 relies on this to run as a plain host-native test binary).
@@ -48,5 +61,17 @@ void app_main(void) {
     RUN_TEST(test_metrics_store_histogram_reinit_resets_counts);
     RUN_TEST(test_metrics_store_histogram_omitted_when_stale);
     RUN_TEST(test_metrics_store_all_metric_slots_can_be_histograms);
+    RUN_TEST(test_lua_sandbox_create_destroy_basic);
+    RUN_TEST(test_lua_sandbox_check_syntax_accepts_valid_source);
+    RUN_TEST(test_lua_sandbox_check_syntax_rejects_invalid_source);
+    RUN_TEST(test_lua_sandbox_stripped_globals_are_absent);
+    RUN_TEST(test_lua_sandbox_os_io_debug_package_not_loaded);
+    RUN_TEST(test_lua_sandbox_restricted_libraries_are_usable);
+    RUN_TEST(test_lua_sandbox_resume_without_load_returns_invalid_state);
+    RUN_TEST(test_lua_sandbox_stream_parser_yields_and_resumes);
+    RUN_TEST(test_lua_sandbox_poll_parser_yield_ms);
+    RUN_TEST(test_lua_sandbox_load_replaces_previous_coroutine);
+    RUN_TEST(test_lua_sandbox_instruction_hook_fires_on_runaway_script);
+    RUN_TEST(test_lua_sandbox_memory_cap_enforced);
     exit(UNITY_END());
 }
