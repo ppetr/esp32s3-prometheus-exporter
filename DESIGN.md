@@ -348,6 +348,35 @@ source — lower integration risk, since Espressif has already worked out
 the Xtensa/RISC-V build specifics, via the same `idf_component.yml`
 pattern already used for `usb_host_bridge`'s `espressif/usb` dependency.
 
+**Upstream packaging bug found while wiring this up**: `espressif/lua`
+compiles the library itself with `LUA_32BITS=1` (so `lua_Number`/
+`lua_Integer` are `float`/32-bit `int`), but as a `PRIVATE` compile
+definition — it doesn't propagate to consumers. The component's own
+`port/include/luaconf.h` "header injection", meant to fix exactly this,
+never actually takes effect either: `lua.h`'s `#include "luaconf.h"`
+resolves relative to `lua.h`'s own directory first, finding the real
+`lua/luaconf.h` directly, before the compiler ever consults the
+`port/include` search path. Net effect: any consumer that doesn't also
+define `LUA_32BITS` sees `luaconf.h`'s non-32BITS defaults (`double`/
+`int64_t`) while the actual compiled library uses `float`/`int32_t` —
+every `lua_tonumber`/`lua_tointeger` call silently reads garbage. Fixed in
+`components/lua_sandbox/CMakeLists.txt` with the same `target_compile_definitions(...
+PRIVATE LUA_32BITS=1)` line. Worth reporting upstream
+(`espressif/idf-extra-components`); not done yet pending a decision on
+whether to.
+
+**Implemented contract** (`lua_sandbox_load`/`lua_sandbox_resume`, in
+`components/lua_sandbox/`): the uploaded script's text *is* the coroutine
+body directly — not wrapped in `coroutine.create(function(first_chunk)
+... end)` as sketched below. A top-level Lua chunk is already an implicit
+vararg function, so `local buffer = ...` captures the first
+`lua_sandbox_resume()` call's data directly; no `parser = coroutine.create(...)`
+boilerplate for the script to get right, and no "which global holds the
+coroutine" convention for the C side to assume. The examples below keep the
+`coroutine.create`/named-function framing because that's how the original
+design discussion shaped the two coroutine *shapes* — translate mentally to
+"the chunk body is the function body".
+
 Two coroutine shapes, both driven from the Lua pump task on Core 1:
 
 **A. Stream-driven parser** (USB CDC data arrives asynchronously):
@@ -467,23 +496,21 @@ separate, logical timeout handled in the pump's scheduler loop (track time
 since last successful resume per channel; past a threshold, discard and
 recreate that channel's coroutine rather than leaving it parked forever).
 
-**Restricted API surface** — open only `base`, `table`, `string`, `math`;
-skip `os`, `io`, `debug`, `package` entirely; then strip dangerous globals
-that `base` still exposes:
+**Restricted API surface** — open `base`, `table`, `string`, `math`, and
+`coroutine`; skip `os`, `io`, `debug`, `package` entirely (`package` is
+what provides `require`, so excluding it removes that too); then strip
+dangerous globals that `base` still exposes. `coroutine` is not in the
+original discussion's list below, but has to be: both coroutine shapes in
+§9.1 call `coroutine.yield()` from inside the script, which doesn't exist
+without it — pure language-level control flow, no OS/IO surface, safe to
+include. Lua 5.5's `luaL_openselectedlibs()` (§9.1) replaces the
+hand-rolled `luaL_requiref` loop this originally sketched:
 
 ```c
 void setup_safe_lua_env(lua_State *L) {
-    static const luaL_Reg loadedlibs[] = {
-        {"_G", luaopen_base},
-        {LUA_TABLIBNAME, luaopen_table},
-        {LUA_STRLIBNAME, luaopen_string},
-        {LUA_MATHLIBNAME, luaopen_math},
-        {NULL, NULL}
-    };
-    for (const luaL_Reg *lib = loadedlibs; lib->func; lib++) {
-        luaL_requiref(L, lib->name, lib->func, 1);
-        lua_pop(L, 1);
-    }
+    int load_mask = LUA_GLIBK | LUA_TABLIBK | LUA_STRLIBK | LUA_MATHLIBK | LUA_COLIBK;
+    luaL_openselectedlibs(L, load_mask, 0);
+
     lua_pushnil(L); lua_setglobal(L, "dofile");
     lua_pushnil(L); lua_setglobal(L, "loadfile");
     lua_pushnil(L); lua_setglobal(L, "print");
