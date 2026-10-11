@@ -143,7 +143,10 @@ rather than silently wedge the bridge.
 Each channel (one per USB device / future I2C sensor) owns a small set of
 named metrics. Store as a map keyed by metric name, value = `{float value,
 uint32_t last_update_tick}` (`last_update_tick` from `xTaskGetTickCount()`
-or `esp_timer_get_time()`, not wall-clock — see §6.3).
+or `esp_timer_get_time()`, not wall-clock — see §6.3). A metric slot is
+independently either a plain gauge (as above) or a histogram (§6.5) — the
+split between the two isn't known ahead of time, so they share one pool of
+slots per channel rather than having separate per-kind limits.
 
 ### 6.2 Cross-core handoff
 
@@ -221,6 +224,49 @@ as an independent background concern, not gating anything on it:
   Internet access, at the cost of losing absolute-time precision (falls
   back to Prometheus's own scrape timestamp, which is normally good
   enough).
+
+### 6.5 Histogram-shaped metrics
+
+Not every channel's data is a single scalar — a few scripts will want a
+Prometheus histogram (e.g. a parse-latency or frame-size distribution)
+rather than a gauge. This is a metric slot *kind*, not a separate concept:
+
+- `metrics_store_histogram_init(channel, name, bucket_upper_bounds,
+  bucket_count)` defines (or redefines, resetting counts) a histogram's
+  bucket boundaries, which must be strictly ascending; an implicit `+Inf`
+  bucket catches every observation, as in the standard Prometheus client
+  libraries.
+- `metrics_store_histogram_observe(channel, name, value)` increments the
+  matching bucket plus the running count/sum. Returns "not found" if
+  `histogram_init` wasn't called first — there's no implicit creation on
+  first observe the way plain `metrics_store_set` creates a gauge, since
+  the bucket boundaries have to come from somewhere.
+- Bucket storage (`float` bounds + `uint32_t` counts) is **heap-allocated
+  once**, in `histogram_init`, sized exactly to the caller's
+  `bucket_count` — never reallocated on the `observe` hot path. This was a
+  deliberate middle ground from the original discussion: fully static
+  arrays would force one fixed bucket count for every histogram ever
+  defined (wasteful, or too small for someone's legitimate use), while a
+  general-purpose dynamic container (e.g. `absl::btree_map`) buys nothing
+  at this scale (single-digit channels, a handful of metrics each) and
+  reintroduces the heap-churn concern §6.2 already avoids for the
+  gauge/channel maps — not to mention being unproven on the Xtensa
+  toolchain, the same category of risk that ruled out Rust in §14.
+- `METRICS_STORE_MAX_HISTOGRAM_BUCKETS` (128) is a sanity ceiling on the
+  one-time allocation request, not a fixed array size — it exists so a bad
+  `/scripts/*` upload can't make the firmware allocate an unbounded amount
+  of memory.
+- Exposition format matches the standard Prometheus histogram shape:
+  `name_bucket{channel="...",le="..."} <cumulative count>` for each
+  boundary plus `+Inf`, then `name_sum{channel="..."} <sum>` and
+  `name_count{channel="..."} <count>`. Staleness (§6.3) applies to the
+  whole histogram at once, keyed off the last `observe` call.
+- **Not yet decided**: whether `metrics_store_histogram_init`'s one-time
+  allocation should be steered to PSRAM (`heap_caps_malloc` with
+  `MALLOC_CAP_SPIRAM`) rather than plain `malloc()`/internal SRAM — not a
+  concern at the bucket counts scripts will realistically use, but worth
+  revisiting if a script ever defines many large histograms at once (see
+  §13).
 
 ## 7. Diagnostics metric
 
@@ -566,6 +612,9 @@ answer, surface them:
 - Exact Kconfig option name and build-variant wiring for selecting
   `channel_source_fake` vs. the real drivers (§12.1), and how `net_eth`
   swaps between the W5500 driver and QEMU's netif for Tier 2 builds.
+- Whether histogram bucket storage (§6.5) should be steered to PSRAM via
+  `heap_caps_malloc`/`MALLOC_CAP_SPIRAM` instead of plain `malloc()` —
+  revisit if a script ever defines many large histograms at once.
 
 ## 14. Language choice: why C++, not Rust/Nim/Zig
 
@@ -591,6 +640,7 @@ favors plain C++ across the board.
 build the Tier 1 host-native unit tests (§12.2) with
 `-fsanitize=address,undefined` on the Linux target — catches buffer
 overruns, use-after-free, signed overflow, and misaligned access on every
-test run, at zero cost to the embedded build. Wire this in once
-`metrics_store`/`lua_sandbox`/the scheduler have real implementations to
-test.
+test run, at zero cost to the embedded build. Wired in (`test/host/CMakeLists.txt`)
+once `metrics_store` got a real implementation with actual heap allocation
+(§6.5's histogram buckets) worth catching bugs in; carry the same flags
+forward once `lua_sandbox`/the scheduler get real implementations too.

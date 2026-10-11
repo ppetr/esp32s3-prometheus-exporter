@@ -18,4 +18,12 @@ set(EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../components/metrics_sto
 set(COMPONENTS main)
 
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+
+# Catches buffer overruns, use-after-free, signed overflow, and misaligned
+# access on every test run, at zero cost to the embedded build (DESIGN.md
+# §14) - relevant now that metrics_store does real heap allocation for
+# histogram buckets.
+idf_build_set_property(COMPILE_OPTIONS "-fsanitize=address,undefined" APPEND)
+idf_build_set_property(LINK_OPTIONS "-fsanitize=address,undefined" APPEND)
+
 project(test_host)

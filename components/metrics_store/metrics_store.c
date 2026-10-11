@@ -1,6 +1,8 @@
 #include "metrics_store.h"
 #include "metrics_store_internal.h"
 
+#include <stdarg.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
@@ -10,11 +12,31 @@
 #define METRICS_STORE_MAX_ERROR_LEN 64
 #define METRICS_STORE_STALENESS_TICKS pdMS_TO_TICKS(METRICS_STORE_STALENESS_MS)
 
+typedef enum {
+    METRIC_KIND_GAUGE = 0,
+    METRIC_KIND_HISTOGRAM = 1,
+} metric_kind_t;
+
 typedef struct {
     char name[METRICS_STORE_MAX_NAME_LEN];
-    float value;
-    TickType_t last_update_tick;
     bool in_use;
+    metric_kind_t kind;
+    TickType_t last_update_tick;
+
+    // Valid when kind == METRIC_KIND_GAUGE.
+    float value;
+
+    // Valid when kind == METRIC_KIND_HISTOGRAM. bucket_upper_bounds/
+    // bucket_counts are heap-allocated once in metrics_store_histogram_init(),
+    // sized exactly to bucket_count - never reallocated on the observe hot
+    // path. bucket_counts[i] is the (non-cumulative) count of observations in
+    // (bucket_upper_bounds[i-1], bucket_upper_bounds[i]]; cumulative sums are
+    // computed when formatting.
+    size_t bucket_count;
+    float *bucket_upper_bounds;
+    uint32_t *bucket_counts;
+    uint32_t total_count;
+    double sum;
 } metric_entry_t;
 
 typedef struct {
@@ -46,20 +68,38 @@ void metrics_store_deinit(void) {
     if (!s_initialized) {
         return;
     }
+    for (int i = 0; i < METRICS_STORE_MAX_CHANNELS; i++) {
+        for (int j = 0; j < METRICS_STORE_MAX_METRICS_PER_CHANNEL; j++) {
+            free(s_channels[i].metrics[j].bucket_upper_bounds);
+            free(s_channels[i].metrics[j].bucket_counts);
+        }
+    }
     vSemaphoreDelete(s_lock);
     s_lock = NULL;
     s_initialized = false;
 }
 
 // Caller must hold s_lock.
-static channel_entry_t *find_or_create_channel_locked(const char *channel) {
-    channel_entry_t *free_slot = NULL;
+static channel_entry_t *find_channel_locked(const char *channel) {
     for (int i = 0; i < METRICS_STORE_MAX_CHANNELS; i++) {
         if (s_channels[i].in_use && strcmp(s_channels[i].name, channel) == 0) {
             return &s_channels[i];
         }
-        if (!s_channels[i].in_use && free_slot == NULL) {
+    }
+    return NULL;
+}
+
+// Caller must hold s_lock.
+static channel_entry_t *find_or_create_channel_locked(const char *channel) {
+    channel_entry_t *existing = find_channel_locked(channel);
+    if (existing != NULL) {
+        return existing;
+    }
+    channel_entry_t *free_slot = NULL;
+    for (int i = 0; i < METRICS_STORE_MAX_CHANNELS; i++) {
+        if (!s_channels[i].in_use) {
             free_slot = &s_channels[i];
+            break;
         }
     }
     if (free_slot == NULL) {
@@ -73,14 +113,29 @@ static channel_entry_t *find_or_create_channel_locked(const char *channel) {
 }
 
 // Caller must hold s_lock.
-static metric_entry_t *find_or_create_metric_locked(channel_entry_t *ch, const char *metric_name) {
-    metric_entry_t *free_slot = NULL;
+static metric_entry_t *find_metric_locked(channel_entry_t *ch, const char *metric_name) {
     for (int i = 0; i < METRICS_STORE_MAX_METRICS_PER_CHANNEL; i++) {
         if (ch->metrics[i].in_use && strcmp(ch->metrics[i].name, metric_name) == 0) {
             return &ch->metrics[i];
         }
-        if (!ch->metrics[i].in_use && free_slot == NULL) {
+    }
+    return NULL;
+}
+
+// Caller must hold s_lock. *out_created tells the caller whether this slot
+// was just allocated (so it must still set `kind`) or already existed.
+static metric_entry_t *find_or_create_metric_locked(channel_entry_t *ch, const char *metric_name,
+                                                      bool *out_created) {
+    metric_entry_t *existing = find_metric_locked(ch, metric_name);
+    if (existing != NULL) {
+        *out_created = false;
+        return existing;
+    }
+    metric_entry_t *free_slot = NULL;
+    for (int i = 0; i < METRICS_STORE_MAX_METRICS_PER_CHANNEL; i++) {
+        if (!ch->metrics[i].in_use) {
             free_slot = &ch->metrics[i];
+            break;
         }
     }
     if (free_slot == NULL) {
@@ -89,6 +144,7 @@ static metric_entry_t *find_or_create_metric_locked(channel_entry_t *ch, const c
     memset(free_slot, 0, sizeof(*free_slot));
     snprintf(free_slot->name, sizeof(free_slot->name), "%s", metric_name);
     free_slot->in_use = true;
+    *out_created = true;
     return free_slot;
 }
 
@@ -106,13 +162,107 @@ esp_err_t metrics_store_set(const char *channel, const char *metric_name, float 
     if (ch == NULL) {
         err = ESP_ERR_NO_MEM;
     } else {
-        metric_entry_t *m = find_or_create_metric_locked(ch, metric_name);
+        bool created;
+        metric_entry_t *m = find_or_create_metric_locked(ch, metric_name, &created);
         if (m == NULL) {
             err = ESP_ERR_NO_MEM;
+        } else if (!created && m->kind != METRIC_KIND_GAUGE) {
+            err = ESP_ERR_INVALID_STATE;
         } else {
+            m->kind = METRIC_KIND_GAUGE;
             m->value = value;
             m->last_update_tick = xTaskGetTickCount();
         }
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+esp_err_t metrics_store_histogram_init(const char *channel, const char *metric_name,
+                                        const float *bucket_upper_bounds, size_t bucket_count) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (channel == NULL || metric_name == NULL || bucket_upper_bounds == NULL || bucket_count == 0 ||
+        bucket_count > METRICS_STORE_MAX_HISTOGRAM_BUCKETS) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    for (size_t i = 1; i < bucket_count; i++) {
+        if (bucket_upper_bounds[i] <= bucket_upper_bounds[i - 1]) {
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = ESP_OK;
+    channel_entry_t *ch = find_or_create_channel_locked(channel);
+    if (ch == NULL) {
+        err = ESP_ERR_NO_MEM;
+    } else {
+        bool created;
+        metric_entry_t *m = find_or_create_metric_locked(ch, metric_name, &created);
+        if (m == NULL) {
+            err = ESP_ERR_NO_MEM;
+        } else if (!created && m->kind != METRIC_KIND_HISTOGRAM) {
+            err = ESP_ERR_INVALID_STATE;
+        } else {
+            float *new_bounds = malloc(bucket_count * sizeof(float));
+            uint32_t *new_counts = calloc(bucket_count, sizeof(uint32_t));
+            if (new_bounds == NULL || new_counts == NULL) {
+                free(new_bounds);
+                free(new_counts);
+                if (created) {
+                    m->in_use = false;  // don't leak a half-initialized slot
+                }
+                err = ESP_ERR_NO_MEM;
+            } else {
+                free(m->bucket_upper_bounds);
+                free(m->bucket_counts);
+                memcpy(new_bounds, bucket_upper_bounds, bucket_count * sizeof(float));
+                m->bucket_upper_bounds = new_bounds;
+                m->bucket_counts = new_counts;
+                m->bucket_count = bucket_count;
+                m->kind = METRIC_KIND_HISTOGRAM;
+                m->total_count = 0;
+                m->sum = 0.0;
+                m->last_update_tick = xTaskGetTickCount();
+            }
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+esp_err_t metrics_store_histogram_observe(const char *channel, const char *metric_name, float value) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (channel == NULL || metric_name == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = ESP_OK;
+    channel_entry_t *ch = find_channel_locked(channel);
+    metric_entry_t *m = (ch != NULL) ? find_metric_locked(ch, metric_name) : NULL;
+    if (m == NULL) {
+        err = ESP_ERR_NOT_FOUND;
+    } else if (m->kind != METRIC_KIND_HISTOGRAM) {
+        err = ESP_ERR_INVALID_STATE;
+    } else {
+        size_t idx = m->bucket_count;  // bucket_count == "falls only in +Inf"
+        for (size_t i = 0; i < m->bucket_count; i++) {
+            if (value <= m->bucket_upper_bounds[i]) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx < m->bucket_count) {
+            m->bucket_counts[idx]++;
+        }
+        m->total_count++;
+        m->sum += (double)value;
+        m->last_update_tick = xTaskGetTickCount();
     }
     xSemaphoreGive(s_lock);
     return err;
@@ -158,6 +308,46 @@ static void escape_label_value(const char *src, char *dst, size_t dst_len) {
     dst[out] = '\0';
 }
 
+// Appends one snprintf-formatted chunk at *offset, flagging overflow instead
+// of ever writing past buf_len. Caller must hold s_lock.
+static bool append(char *buf, size_t buf_len, size_t *offset, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int n = vsnprintf(buf + *offset, buf_len - *offset, fmt, args);
+    va_end(args);
+    if (n < 0 || (size_t)n >= buf_len - *offset) {
+        return false;
+    }
+    *offset += (size_t)n;
+    return true;
+}
+
+static bool format_gauge(char *buf, size_t buf_len, size_t *offset, const metric_entry_t *m,
+                          const channel_entry_t *ch) {
+    return append(buf, buf_len, offset, "%s{channel=\"%s\"} %g\n", m->name, ch->name, (double)m->value);
+}
+
+static bool format_histogram(char *buf, size_t buf_len, size_t *offset, const metric_entry_t *m,
+                              const channel_entry_t *ch) {
+    uint32_t cumulative = 0;
+    for (size_t i = 0; i < m->bucket_count; i++) {
+        cumulative += m->bucket_counts[i];
+        if (!append(buf, buf_len, offset, "%s_bucket{channel=\"%s\",le=\"%g\"} %lu\n", m->name, ch->name,
+                    (double)m->bucket_upper_bounds[i], (unsigned long)cumulative)) {
+            return false;
+        }
+    }
+    if (!append(buf, buf_len, offset, "%s_bucket{channel=\"%s\",le=\"+Inf\"} %lu\n", m->name, ch->name,
+                (unsigned long)m->total_count)) {
+        return false;
+    }
+    if (!append(buf, buf_len, offset, "%s_sum{channel=\"%s\"} %g\n", m->name, ch->name, m->sum)) {
+        return false;
+    }
+    return append(buf, buf_len, offset, "%s_count{channel=\"%s\"} %lu\n", m->name, ch->name,
+                  (unsigned long)m->total_count);
+}
+
 int metrics_store_format_at(char *buf, size_t buf_len, uint32_t now_ticks) {
     if (buf == NULL || buf_len == 0 || !s_initialized) {
         return -1;
@@ -181,13 +371,12 @@ int metrics_store_format_at(char *buf, size_t buf_len, uint32_t now_ticks) {
             if ((TickType_t)(now_ticks - m->last_update_tick) > METRICS_STORE_STALENESS_TICKS) {
                 continue;
             }
-            int n = snprintf(buf + offset, buf_len - offset, "%s{channel=\"%s\"} %g\n", m->name,
-                              ch->name, (double)m->value);
-            if (n < 0 || (size_t)n >= buf_len - offset) {
+            bool ok = (m->kind == METRIC_KIND_HISTOGRAM) ? format_histogram(buf, buf_len, &offset, m, ch)
+                                                           : format_gauge(buf, buf_len, &offset, m, ch);
+            if (!ok) {
                 overflow = true;
                 break;
             }
-            offset += (size_t)n;
         }
         if (overflow) {
             break;
@@ -195,18 +384,16 @@ int metrics_store_format_at(char *buf, size_t buf_len, uint32_t now_ticks) {
 
         char escaped_error[METRICS_STORE_MAX_ERROR_LEN * 2];
         escape_label_value(ch->lua_error, escaped_error, sizeof(escaped_error));
-        int n = (ch->lua_error[0] != '\0')
-                    ? snprintf(buf + offset, buf_len - offset,
+        bool ok = (ch->lua_error[0] != '\0')
+                      ? append(buf, buf_len, &offset,
                                "usb_bridge_channel_info{channel=\"%s\",status=\"%s\",lua_error=\"%s\"} 1\n",
                                ch->name, ch->online ? "online" : "offline", escaped_error)
-                    : snprintf(buf + offset, buf_len - offset,
-                               "usb_bridge_channel_info{channel=\"%s\",status=\"%s\"} 1\n", ch->name,
-                               ch->online ? "online" : "offline");
-        if (n < 0 || (size_t)n >= buf_len - offset) {
+                      : append(buf, buf_len, &offset, "usb_bridge_channel_info{channel=\"%s\",status=\"%s\"} 1\n",
+                               ch->name, ch->online ? "online" : "offline");
+        if (!ok) {
             overflow = true;
             break;
         }
-        offset += (size_t)n;
     }
     xSemaphoreGive(s_lock);
 
