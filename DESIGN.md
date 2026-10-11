@@ -319,13 +319,34 @@ and is the most likely early warning for USB-inrush-induced brownouts.
 
 ### 9.1 Why Lua, and why coroutines
 
-Lua 5.4, chosen over CircuitPython/MicroPython for this specific job:
+Lua 5.5, chosen over CircuitPython/MicroPython for this specific job:
 smaller footprint, a crashed user script only aborts that one `lua_pcall`
 rather than restarting the whole interpreter/kernel, and fast interpreter
 startup if ever needed per-call. Coroutines let a parser be written as
 straight-line "read until delimiter" code while actually running
 incrementally across however many raw-data callbacks it takes to see a full
 message — this replaces a hand-rolled C++ state machine per protocol.
+
+**Why 5.5, not 5.4** (the version this document originally named, before 5.5
+existed - 5.5.0 released 22 Dec 2025): checked the two series' actual
+differences against what the sandboxing in §9.2 needs. `lua_sethook`/
+`LUA_MASKCOUNT` (the instruction-count hook), `luaL_requiref` (restricted
+library loading), `lua_resume`/`lua_yield` (coroutines), and `lua_register`
+are all unchanged between 5.4 and 5.5 — verified against the 5.5 reference
+manual's own "Incompatibilities with the Previous Version" chapter, not
+assumed. The one C API change that touches us at all: `lua_newstate` gained
+a third parameter (a hash seed, filled via the new `luaL_makeseed()`
+helper) — a one-line adjustment to `lua_sandbox_create()`, not a design
+concern. In exchange, 5.5 brings two concrete wins here: major garbage
+collections now run incrementally (lower worst-case GC pause, relevant to
+the tight USB-servicing timing budget in §8), and a new
+`luaL_openselectedlibs()` helper that directly simplifies the
+restricted-library setup §9.2 would otherwise hand-roll via repeated
+`luaL_requiref` calls. Pulled in via the Espressif-maintained
+`espressif/lua` component (ESP Component Registry) rather than vendored
+source — lower integration risk, since Espressif has already worked out
+the Xtensa/RISC-V build specifics, via the same `idf_component.yml`
+pattern already used for `usb_host_bridge`'s `espressif/usb` dependency.
 
 Two coroutine shapes, both driven from the Lua pump task on Core 1:
 

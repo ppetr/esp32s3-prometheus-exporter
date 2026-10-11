@@ -1,0 +1,10 @@
+## IDF Component Manager Manifest File
+dependencies:
+  ## Required IDF version
+  idf:
+    version: '>=4.1.0'
+  # Lua 5.5 (DESIGN.md §9.1 for why 5.5 over the originally-named 5.4).
+  # Pinned to the 5.5.x line - this component's sandboxing code (§9.2) is
+  # written against 5.5's C API, not meant to silently follow a future
+  # major/minor bump.
+  espressif/lua: '~5.5.0'
