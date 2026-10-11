@@ -5,6 +5,10 @@
 extern void test_metrics_store_set_before_init_returns_invalid_state(void);
 extern void test_metrics_store_set_null_args_returns_invalid_arg(void);
 extern void test_metrics_store_set_and_format_basic(void);
+extern void test_metrics_store_counter_add_accumulates_and_formats(void);
+extern void test_metrics_store_counter_add_negative_returns_invalid_arg(void);
+extern void test_metrics_store_counter_add_on_existing_gauge_name_returns_invalid_state(void);
+extern void test_metrics_store_set_on_existing_counter_name_returns_invalid_state(void);
 extern void test_metrics_store_set_on_existing_histogram_name_returns_invalid_state(void);
 extern void test_metrics_store_channel_status_online_health_metric(void);
 extern void test_metrics_store_channel_status_offline_with_error(void);
@@ -27,6 +31,10 @@ void app_main(void) {
     RUN_TEST(test_metrics_store_set_before_init_returns_invalid_state);
     RUN_TEST(test_metrics_store_set_null_args_returns_invalid_arg);
     RUN_TEST(test_metrics_store_set_and_format_basic);
+    RUN_TEST(test_metrics_store_counter_add_accumulates_and_formats);
+    RUN_TEST(test_metrics_store_counter_add_negative_returns_invalid_arg);
+    RUN_TEST(test_metrics_store_counter_add_on_existing_gauge_name_returns_invalid_state);
+    RUN_TEST(test_metrics_store_set_on_existing_counter_name_returns_invalid_state);
     RUN_TEST(test_metrics_store_set_on_existing_histogram_name_returns_invalid_state);
     RUN_TEST(test_metrics_store_channel_status_online_health_metric);
     RUN_TEST(test_metrics_store_channel_status_offline_with_error);

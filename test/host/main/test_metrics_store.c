@@ -36,6 +36,30 @@ void test_metrics_store_set_and_format_basic(void) {
     TEST_ASSERT_NOT_NULL(strstr(buf, "temp{channel=\"dev0\"} 23.5\n"));
 }
 
+void test_metrics_store_counter_add_accumulates_and_formats(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_counter_add("dev0", "errors_total", 3.0));
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_counter_add("dev0", "errors_total", 2.0));
+
+    char buf[256];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "errors_total{channel=\"dev0\"} 5\n"));
+}
+
+void test_metrics_store_counter_add_negative_returns_invalid_arg(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_counter_add("dev0", "errors_total", 3.0));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, metrics_store_counter_add("dev0", "errors_total", -1.0));
+}
+
+void test_metrics_store_counter_add_on_existing_gauge_name_returns_invalid_state(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_set("dev0", "temp", 1.0f));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_STATE, metrics_store_counter_add("dev0", "temp", 1.0));
+}
+
+void test_metrics_store_set_on_existing_counter_name_returns_invalid_state(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_counter_add("dev0", "errors_total", 1.0));
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_STATE, metrics_store_set("dev0", "errors_total", 1.0f));
+}
+
 void test_metrics_store_set_on_existing_histogram_name_returns_invalid_state(void) {
     float bounds[] = {10.0f};
     TEST_ASSERT_EQUAL(ESP_OK, metrics_store_histogram_init("dev0", "lat", bounds, 1));

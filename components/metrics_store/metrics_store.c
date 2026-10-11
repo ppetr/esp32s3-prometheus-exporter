@@ -15,6 +15,7 @@
 typedef enum {
     METRIC_KIND_GAUGE = 0,
     METRIC_KIND_HISTOGRAM = 1,
+    METRIC_KIND_COUNTER = 2,
 } metric_kind_t;
 
 typedef struct {
@@ -25,6 +26,10 @@ typedef struct {
 
     // Valid when kind == METRIC_KIND_GAUGE.
     float value;
+
+    // Valid when kind == METRIC_KIND_COUNTER. Cumulative; only ever
+    // increases (metrics_store_counter_add() rejects negative amounts).
+    double counter_value;
 
     // Valid when kind == METRIC_KIND_HISTOGRAM. bucket_upper_bounds/
     // bucket_counts are heap-allocated once in metrics_store_histogram_init(),
@@ -171,6 +176,39 @@ esp_err_t metrics_store_set(const char *channel, const char *metric_name, float 
         } else {
             m->kind = METRIC_KIND_GAUGE;
             m->value = value;
+            m->last_update_tick = xTaskGetTickCount();
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+esp_err_t metrics_store_counter_add(const char *channel, const char *metric_name, double amount) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (channel == NULL || metric_name == NULL || amount < 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = ESP_OK;
+    channel_entry_t *ch = find_or_create_channel_locked(channel);
+    if (ch == NULL) {
+        err = ESP_ERR_NO_MEM;
+    } else {
+        bool created;
+        metric_entry_t *m = find_or_create_metric_locked(ch, metric_name, &created);
+        if (m == NULL) {
+            err = ESP_ERR_NO_MEM;
+        } else if (!created && m->kind != METRIC_KIND_COUNTER) {
+            err = ESP_ERR_INVALID_STATE;
+        } else {
+            if (created) {
+                m->kind = METRIC_KIND_COUNTER;
+                m->counter_value = 0.0;
+            }
+            m->counter_value += amount;
             m->last_update_tick = xTaskGetTickCount();
         }
     }
@@ -327,6 +365,11 @@ static bool format_gauge(char *buf, size_t buf_len, size_t *offset, const metric
     return append(buf, buf_len, offset, "%s{channel=\"%s\"} %g\n", m->name, ch->name, (double)m->value);
 }
 
+static bool format_counter(char *buf, size_t buf_len, size_t *offset, const metric_entry_t *m,
+                            const channel_entry_t *ch) {
+    return append(buf, buf_len, offset, "%s{channel=\"%s\"} %g\n", m->name, ch->name, m->counter_value);
+}
+
 static bool format_histogram(char *buf, size_t buf_len, size_t *offset, const metric_entry_t *m,
                               const channel_entry_t *ch) {
     uint32_t cumulative = 0;
@@ -371,8 +414,18 @@ int metrics_store_format_at(char *buf, size_t buf_len, uint32_t now_ticks) {
             if ((TickType_t)(now_ticks - m->last_update_tick) > METRICS_STORE_STALENESS_TICKS) {
                 continue;
             }
-            bool ok = (m->kind == METRIC_KIND_HISTOGRAM) ? format_histogram(buf, buf_len, &offset, m, ch)
-                                                           : format_gauge(buf, buf_len, &offset, m, ch);
+            bool ok;
+            switch (m->kind) {
+                case METRIC_KIND_HISTOGRAM:
+                    ok = format_histogram(buf, buf_len, &offset, m, ch);
+                    break;
+                case METRIC_KIND_COUNTER:
+                    ok = format_counter(buf, buf_len, &offset, m, ch);
+                    break;
+                default:
+                    ok = format_gauge(buf, buf_len, &offset, m, ch);
+                    break;
+            }
             if (!ok) {
                 overflow = true;
                 break;

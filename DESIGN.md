@@ -144,9 +144,10 @@ Each channel (one per USB device / future I2C sensor) owns a small set of
 named metrics. Store as a map keyed by metric name, value = `{float value,
 uint32_t last_update_tick}` (`last_update_tick` from `xTaskGetTickCount()`
 or `esp_timer_get_time()`, not wall-clock — see §6.3). A metric slot is
-independently either a plain gauge (as above) or a histogram (§6.5) — the
-split between the two isn't known ahead of time, so they share one pool of
-slots per channel rather than having separate per-kind limits.
+independently a gauge (as above), a counter (§6.6), or a histogram
+(§6.5) — the split between the three isn't known ahead of time, so they
+share one pool of slots per channel rather than having separate
+per-kind limits.
 
 ### 6.2 Cross-core handoff
 
@@ -267,6 +268,28 @@ rather than a gauge. This is a metric slot *kind*, not a separate concept:
   concern at the bucket counts scripts will realistically use, but worth
   revisiting if a script ever defines many large histograms at once (see
   §13).
+
+### 6.6 Counter metrics
+
+A monotonically increasing count of events (bytes received, parse errors,
+...) is common enough to warrant its own kind rather than making every
+script re-implement "gauge that I only ever increase":
+
+- `metrics_store_counter_add(channel, name, amount)` creates the entry at 0
+  on first use (like `metrics_store_set` does for gauges — no separate
+  `_init` step needed, unlike histograms, since there's no configuration
+  to supply up front) and rejects a negative `amount`, since a counter
+  going down is specifically what distinguishes it from a gauge. A process
+  restart resets it to 0 - this is fine as-is because Prometheus's
+  `rate()`/`increase()` already treat any decrease as a reset.
+- Formatted the same as a gauge (`name{channel="..."} value`); by
+  Prometheus convention the caller should give the metric itself a
+  trailing `_total` in its name (e.g. `"bytes_received_total"`) - this
+  function doesn't add the suffix, matching how gauge/histogram also use
+  the name verbatim.
+- Same type-mismatch guard as gauge/histogram: once a name is a counter on
+  a channel, calling `metrics_store_set`/`metrics_store_histogram_init` on
+  that same name returns `ESP_ERR_INVALID_STATE`, and vice versa.
 
 ## 7. Diagnostics metric
 
@@ -615,6 +638,15 @@ answer, surface them:
 - Whether histogram bucket storage (§6.5) should be steered to PSRAM via
   `heap_caps_malloc`/`MALLOC_CAP_SPIRAM` instead of plain `malloc()` —
   revisit if a script ever defines many large histograms at once.
+- Summary-style metrics (client-side quantiles) were deliberately skipped:
+  Prometheus's own Summary type exposes only the final quantile values, not
+  the underlying estimator state, so it can't be aggregated server-side
+  across instances the way a histogram can via `histogram_quantile()`.
+  Note for whoever revisits this: a mergeable sketch (e.g. t-digest)
+  *would* support cross-instance aggregation if its centroids were exposed
+  and merged outside Prometheus's own model — that's a different, bigger
+  feature than "add a Summary type" and should be scoped separately if it
+  ever becomes a real requirement.
 
 ## 14. Language choice: why C++, not Rust/Nim/Zig
 

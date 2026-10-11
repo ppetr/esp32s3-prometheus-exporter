@@ -39,6 +39,16 @@ void metrics_store_deinit(void);
 // channel.
 esp_err_t metrics_store_set(const char *channel, const char *metric_name, float value);
 
+// Monotonically increasing counter (DESIGN.md §6.6). Creates the entry at 0
+// on first use. amount must be >= 0 - counters never decrease (a process
+// restart naturally resets to 0, which Prometheus's own rate()/increase()
+// already handle as a counter reset). By Prometheus convention, name the
+// metric itself with a trailing "_total" (e.g. "bytes_received_total") -
+// this function does not add the suffix for you. Returns
+// ESP_ERR_INVALID_STATE if metric_name already names a non-counter metric
+// on this channel.
+esp_err_t metrics_store_counter_add(const char *channel, const char *metric_name, double amount);
+
 // Defines (or redefines) a histogram's bucket upper bounds, which must be
 // strictly ascending; an implicit "+Inf" bucket catches every observation.
 // Must be called once before metrics_store_histogram_observe() for this
