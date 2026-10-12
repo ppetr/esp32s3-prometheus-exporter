@@ -38,11 +38,14 @@ Key hardware constraints to design around:
 - **Download mode is always available as a fallback.** Even if the app
   firmware hangs in Host mode, holding BOOT at reset puts the chip in ROM
   download mode, so flashing is never permanently blocked by a bad build.
-- **W5500 is on its own SPI bus** on the reference Waveshare wiring,
-  separate from the general-purpose SPI exposed for sensors — confirm this
-  against the board's actual schematic before wiring additional SPI
-  peripherals, since sharing a bus with Ethernet adds SPI-arbitration
-  concerns between Core 0 (Ethernet) and Core 1 (sensor polling).
+- **W5500 pinout (confirmed from the official Waveshare wiki, not
+  assumed):** SCLK 13, MOSI 11, MISO 12, CS 14, INT 10, RST 9, on its own
+  SPI bus separate from any general-purpose SPI exposed for sensors —
+  sharing a bus with Ethernet would add SPI-arbitration concerns between
+  Core 0 (Ethernet) and Core 1 (sensor polling). All six are
+  `net_eth`-Kconfig options (`CONFIG_NET_ETH_SPI_*_GPIO` etc., see
+  `components/net_eth/Kconfig`), so a different board/wiring is a
+  `menuconfig` change, not a code change.
 - **PoE power budget.** 802.3af typically yields ~6–12 W after the PoE
   module's conversion losses. Budget for the ESP32 + W5500 + any
   USB-bus-powered client device. Expose the regulator's 5 V-rail voltage on
@@ -149,6 +152,12 @@ would push into is, for now, `channel_registry`'s fixed per-channel
 pending-data buffer (§9.1) rather than a true ring buffer - non-blocking,
 drop-on-full, sized to §8's suggested range; swap in a real ring buffer
 later if throughput ever demands it.
+
+**Implemented**: `net_eth_init()` brings up the W5500 (`espressif/w5500`
+managed component), DHCP, and best-effort SNTP (§6.4); confirmed on real
+hardware - link up, DHCP lease obtained, host reachable by ping. It runs
+entirely on ESP-IDF's own Ethernet/LwIP tasks (no task of ours to pin). Not
+yet done: a dedicated diagnostics metric exposing link state (§7).
 
 ## 6. Metrics storage and the Prometheus exporter
 
@@ -732,7 +741,10 @@ Reserved for exactly the things Tiers 1–2 structurally cannot cover:
 
 - `usb_host_bridge` against a real USB CDC device — enumeration, NAK
   behavior under a deliberately slow consumer, disconnect handling.
-- `net_eth`'s real W5500 SPI bring-up.
+- ~~`net_eth`'s real W5500 SPI bring-up~~ — done: link-up, DHCP lease, and
+  SNTP sync all confirmed on real hardware against the LAN, board reachable
+  by ping. Deferred: a static-IP fallback if DHCP is ever unavailable, and
+  verifying reconnect behavior after a cable pull.
 - `i2c_poll_source` against real I2C sensors.
 - The GPIO boot-mode strap (§4) with an actual jumper/button.
 - PoE power budget / 5 V-rail ADC reading (§7) under real USB client load.
@@ -757,9 +769,12 @@ answer, surface them:
   or whether per-channel isolation is needed from day one.
 - Upload endpoint authentication, if the deployment target isn't a fully
   trusted LAN (§10).
-- Confirm from the actual Waveshare schematic (not assumed from generic
-  ESP32-S3-ETH boards) which SPI bus W5500 is on and whether any other
-  bus is free for additional sensors without contention.
+- ~~Confirm from the actual Waveshare schematic which SPI bus W5500 is
+  on~~ — resolved: pins confirmed from the official Waveshare wiki and
+  verified against real hardware (§2). Still open: whether the *other*
+  SPI bus (SPI3_HOST, since W5500 defaults to SPI2_HOST) is actually free
+  for sensors on this board, or shares pins with something else — not
+  yet checked.
 - Exact Kconfig option name and build-variant wiring for selecting
   `channel_source_fake` vs. the real drivers (§12.1), and how `net_eth`
   swaps between the W5500 driver and QEMU's netif for Tier 2 builds.
