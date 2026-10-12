@@ -1,0 +1,7 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf:
+    version: '>=5.0'
+  # W5500 SPI Ethernet MAC+PHY driver (moved out of esp-idf core as of
+  # IDF 6.0, DESIGN.md §2/§13).
+  espressif/w5500: '^2.0.0'
