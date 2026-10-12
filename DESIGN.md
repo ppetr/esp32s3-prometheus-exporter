@@ -80,6 +80,7 @@ Key hardware constraints to design around:
     i2c_poll_source/      # real impl: I2C register polling
     lua_sandbox/          # lua_State setup, allocator, hooks, safe API — hardware-independent
     channel_registry/     # channel name -> lua_sandbox_t* map + scheduling (§9.1-§9.2) — hardware-independent
+    lua_pump/              # the Lua pump task itself (§5, §9.1) — step logic hardware-independent, task creation Tier 2/3
     metrics_store/        # metric map + staleness logic — hardware-independent
     http_api/              # /metrics and /scripts endpoints — hardware-independent except for the httpd dependency
     net_eth/               # W5500 init, SNTP — real hardware only
@@ -136,6 +137,18 @@ Enable the Task Watchdog on the USB task and the Lua pump task. A Lua
 script that somehow escapes the instruction hook (bug in the hook itself,
 not just a runaway user script) should still trip the watchdog and reset
 rather than silently wedge the bridge.
+
+**Implemented**: the Lua pump task (`lua_pump_start()`) registers with
+the Task Watchdog on a best-effort basis (skipped at compile time if
+`CONFIG_ESP_TASK_WDT_EN` isn't set, which it isn't on the Linux target's
+default config - not fatal either way, since the watchdog is a hardware
+safety net, not load-bearing for Tier 1). Its priority
+(`tskIDLE_PRIORITY + 10`) is a placeholder, not yet tuned against the
+other tasks in this table once they exist. "The ring buffer" the USB task
+would push into is, for now, `channel_registry`'s fixed per-channel
+pending-data buffer (§9.1) rather than a true ring buffer - non-blocking,
+drop-on-full, sized to §8's suggested range; swap in a real ring buffer
+later if throughput ever demands it.
 
 ## 6. Metrics storage and the Prometheus exporter
 
@@ -454,6 +467,20 @@ a stream parser paused mid-message (`local chunk = coroutine.yield()`,
 waiting for the next chunk) would get spuriously re-resumed with no data
 on the very next scheduler pass, which a script following §9.1-A's own
 example (no `or ""` fallback past the first line) would error on.
+
+`lua_pump` drives this: `lua_pump_step(now_ticks, instruction_limit)`
+drains and resumes every channel with pending data, then resumes one due
+poll channel, then checks for stalled channels - a plain function,
+unit-testable the same way. `lua_pump_start()` wraps it in the actual
+FreeRTOS task (Core 1, DESIGN.md §5), **simplified from "wait on data OR
+deadline" to a fixed poll**: the task calls `lua_pump_step()` in a loop,
+sleeping `LUA_PUMP_IDLE_SLEEP_MS` (20 ms) when a step found nothing to
+do. A true event-driven wait (woken early by an incoming-data
+notification) would need a task handle + notification wired through from
+whatever produces the data (`usb_host_bridge`, not built yet) - deferred
+as unneeded complexity for now: §8 already budgets "tens of milliseconds
+of slack" before USB back-pressure matters, comfortably inside a 20 ms
+polling granularity.
 
 Each channel's coroutine is independent — separate local state (its own
 `buffer`, its own `next_run_ticks`). **Revised from the original plan**:

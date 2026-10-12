@@ -6,6 +6,8 @@ idf_component_register(
         usb_host_bridge
         i2c_poll_source
         lua_sandbox
+        channel_registry
+        lua_pump
         metrics_store
         http_api
         net_eth
