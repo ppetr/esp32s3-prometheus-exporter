@@ -45,6 +45,13 @@ extern void test_channel_registry_load_script_unknown_channel_returns_not_found(
 extern void test_channel_registry_resume_unknown_channel_returns_not_found(void);
 extern void test_channel_registry_load_and_resume_end_to_end(void);
 extern void test_channel_registry_rejected_upload_does_not_clobber_existing_script(void);
+extern void test_channel_registry_pick_due_channel_no_channels_returns_not_found(void);
+extern void test_channel_registry_pick_due_channel_fresh_channel_is_immediately_due(void);
+extern void test_channel_registry_pick_due_channel_respects_poll_schedule(void);
+extern void test_channel_registry_pick_due_channel_picks_most_overdue_among_several(void);
+extern void test_channel_registry_recover_stalled_channels_ignores_channel_without_script(void);
+extern void test_channel_registry_recover_stalled_channels_ignores_fresh_channels(void);
+extern void test_channel_registry_recover_stalled_channels_recreates_coroutine(void);
 
 // UNITY_END() returns the failure count; exit with it so the Linux-target
 // binary terminates instead of idling in the FreeRTOS scheduler (DESIGN.md
@@ -92,5 +99,12 @@ void app_main(void) {
     RUN_TEST(test_channel_registry_resume_unknown_channel_returns_not_found);
     RUN_TEST(test_channel_registry_load_and_resume_end_to_end);
     RUN_TEST(test_channel_registry_rejected_upload_does_not_clobber_existing_script);
+    RUN_TEST(test_channel_registry_pick_due_channel_no_channels_returns_not_found);
+    RUN_TEST(test_channel_registry_pick_due_channel_fresh_channel_is_immediately_due);
+    RUN_TEST(test_channel_registry_pick_due_channel_respects_poll_schedule);
+    RUN_TEST(test_channel_registry_pick_due_channel_picks_most_overdue_among_several);
+    RUN_TEST(test_channel_registry_recover_stalled_channels_ignores_channel_without_script);
+    RUN_TEST(test_channel_registry_recover_stalled_channels_ignores_fresh_channels);
+    RUN_TEST(test_channel_registry_recover_stalled_channels_recreates_coroutine);
     exit(UNITY_END());
 }

@@ -641,10 +641,13 @@ Linux target (`idf.py --preview set-target linux`) using Unity:
   detection for a stalled mid-message coroutine (§9.1).
 - `metrics_store`: staleness-threshold omission logic, the always-present
   health metric, Prometheus text-format output.
-- `channel_registry`: channel add/remove, and the script-upload decision
-  flow (dry-run compile against a throwaway state, then atomic swap only
-  on success, never disturbing a channel's existing script on a rejected
-  upload) — DESIGN.md §10's actual implementation.
+- `channel_registry`: channel add/remove, the script-upload decision flow
+  (dry-run compile against a throwaway state, then atomic swap only on
+  success, never disturbing a channel's existing script on a rejected
+  upload — DESIGN.md §10's actual implementation), and the two scheduler
+  decision functions from §9.1/§9.2: "earliest due coroutine" selection
+  and stalled-channel recovery, both exercised with an injected
+  `now_ticks` rather than real delays.
 - `http_api_handle_script_upload` is a one-line passthrough to
   `channel_registry_load_script()`, so its logic is covered by
   `channel_registry`'s tests, not a dedicated test of its own —
