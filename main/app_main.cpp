@@ -10,12 +10,11 @@
 
 static const char *TAG = "app_main";
 
-// Sequential bring-up. net_eth/http_api/metrics_store are still stubs
-// (DESIGN.md §5 has them on Core 0); channel_registry + the lua_pump task
-// (Core 1) are real as of this commit, but usb_host_bridge/i2c_poll_source
-// not registering any channels yet means the pump just idles - there's
-// nothing for it to do until those are wired to
-// channel_registry_add_channel().
+// Sequential bring-up. http_api is still a stub (DESIGN.md §5 has it on
+// Core 0); net_eth, channel_registry, and the lua_pump task (Core 1) are
+// real, but usb_host_bridge/i2c_poll_source not registering any channels
+// yet means the pump just idles - there's nothing for it to do until
+// those are wired to channel_registry_add_channel().
 extern "C" void app_main(void) {
     ESP_LOGI(TAG, "esp32-usb-bridge starting");
 
@@ -27,5 +26,5 @@ extern "C" void app_main(void) {
     i2c_poll_source_init();
     lua_pump_start();
 
-    ESP_LOGI(TAG, "bring-up complete (net_eth/http_api/usb_host_bridge/i2c_poll_source are stubs — see DESIGN.md)");
+    ESP_LOGI(TAG, "bring-up complete (http_api/usb_host_bridge/i2c_poll_source are stubs — see DESIGN.md)");
 }
