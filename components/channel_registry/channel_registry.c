@@ -8,6 +8,12 @@
 #include "freertos/task.h"
 #include "lua_sandbox.h"
 
+// "Never" for next_run_ticks purposes - comfortably below INT32_MAX after
+// the (int32_t) delta cast used in pick_due_channel()/recover_stalled_
+// channels(), so it stays unambiguously "far in the future" rather than
+// risking wrapping negative.
+#define CHANNEL_REGISTRY_NO_SCHEDULE_TICKS (UINT32_MAX / 4)
+
 typedef struct {
     char name[CHANNEL_REGISTRY_MAX_NAME_LEN];
     bool in_use;
@@ -26,6 +32,11 @@ typedef struct {
     // if none has been loaded yet - needed to recreate a stalled channel's
     // coroutine from scratch with the same script.
     char *last_source;
+
+    // Pending bytes from a producer (future USB Host CDC task), awaiting
+    // the next resume (DESIGN.md §9, §8).
+    uint8_t pending_data[CHANNEL_REGISTRY_PENDING_DATA_BYTES];
+    size_t pending_len;
 } channel_entry_t;
 
 static channel_entry_t s_channels[CHANNEL_REGISTRY_MAX_CHANNELS];
@@ -198,7 +209,19 @@ esp_err_t channel_registry_resume(const char *channel, const uint8_t *data, size
         err = lua_sandbox_resume(entry->sandbox, data, len, instruction_limit, yield_ms_out, err_buf, err_buf_len);
         if (err == ESP_OK) {
             entry->last_resume_tick = xTaskGetTickCount();
-            entry->next_run_ticks = entry->last_resume_tick + pdMS_TO_TICKS(*yield_ms_out);
+            if (*yield_ms_out > 0) {
+                entry->next_run_ticks = entry->last_resume_tick + pdMS_TO_TICKS(*yield_ms_out);
+            } else {
+                // No explicit schedule requested (a stream-driven
+                // coroutine.yield() with no value, or the coroutine ran to
+                // completion) - don't keep auto-polling this channel; only
+                // new pending data (channel_registry_push_data()) or a
+                // future numeric yield should wake it again (DESIGN.md
+                // §9.1). Without this, a stream parser paused mid-message
+                // would get spuriously re-resumed with no data on the next
+                // scheduler pass.
+                entry->next_run_ticks = entry->last_resume_tick + CHANNEL_REGISTRY_NO_SCHEDULE_TICKS;
+            }
         }
     }
     xSemaphoreGive(s_lock);
@@ -270,4 +293,53 @@ int channel_registry_recover_stalled_channels(uint32_t now_ticks, uint32_t stall
     }
     xSemaphoreGive(s_lock);
     return recovered;
+}
+
+esp_err_t channel_registry_push_data(const char *channel, const uint8_t *data, size_t len) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (channel == NULL || data == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err;
+    channel_entry_t *entry = find_channel_locked(channel);
+    if (entry == NULL) {
+        err = ESP_ERR_NOT_FOUND;
+    } else if (entry->pending_len + len > sizeof(entry->pending_data)) {
+        err = ESP_ERR_NO_MEM;
+    } else {
+        memcpy(entry->pending_data + entry->pending_len, data, len);
+        entry->pending_len += len;
+        err = ESP_OK;
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+int channel_registry_pick_channel_with_data(char *out_channel, size_t out_channel_len, uint8_t *buf, size_t maxlen) {
+    if (!s_initialized || out_channel == NULL || out_channel_len == 0 || buf == NULL) {
+        return -1;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int drained = 0;
+    for (int i = 0; i < CHANNEL_REGISTRY_MAX_CHANNELS; i++) {
+        channel_entry_t *entry = &s_channels[i];
+        if (!entry->in_use || entry->pending_len == 0) {
+            continue;
+        }
+        drained = (int)(entry->pending_len < maxlen ? entry->pending_len : maxlen);
+        memcpy(buf, entry->pending_data, (size_t)drained);
+        // Drop anything beyond maxlen rather than keeping a partial
+        // remainder - maxlen is expected to comfortably cover
+        // CHANNEL_REGISTRY_PENDING_DATA_BYTES in practice.
+        entry->pending_len = 0;
+        snprintf(out_channel, out_channel_len, "%s", entry->name);
+        break;
+    }
+    xSemaphoreGive(s_lock);
+    return drained;
 }

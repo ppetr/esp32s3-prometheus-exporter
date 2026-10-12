@@ -439,9 +439,21 @@ both using the real clock; `channel_registry_pick_due_channel(now_ticks,
 `now_ticks` as a parameter (not reading the clock itself) so the selection
 logic is unit-testable without real delays - same
 write-real-time/read-with-injectable-now split as `metrics_store`'s
-staleness logic (§6.3). A channel that's never been resumed, or whose
-last yield didn't request a delay (a stream-driven `coroutine.yield()`
-with no argument), is always due.
+staleness logic (§6.3).
+
+A freshly loaded channel is always due (gets its first "kick-start"
+resume with no data, needed either way - an I2C-poll script's first run
+has to start somehow, and a stream parser's own first line defaults
+`first_chunk or ""`). After that first resume, only two things make a
+channel due again: new pending data
+(`channel_registry_push_data()`/`channel_registry_pick_channel_with_data()`),
+or the channel itself explicitly yielding a number (a real poll
+schedule). A plain `coroutine.yield()` with no value deliberately does
+*not* reschedule the channel - caught while implementing: without this,
+a stream parser paused mid-message (`local chunk = coroutine.yield()`,
+waiting for the next chunk) would get spuriously re-resumed with no data
+on the very next scheduler pass, which a script following §9.1-A's own
+example (no `or ""` fallback past the first line) would error on.
 
 Each channel's coroutine is independent — separate local state (its own
 `buffer`, its own `next_run_ticks`). **Revised from the original plan**:

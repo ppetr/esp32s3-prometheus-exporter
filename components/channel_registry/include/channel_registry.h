@@ -14,6 +14,14 @@ extern "C" {
 #define CHANNEL_REGISTRY_MAX_CHANNELS 8
 #define CHANNEL_REGISTRY_MAX_NAME_LEN 32
 
+// Per-channel pending-data buffer (DESIGN.md §8's "256-512 byte range").
+// Fixed-size and non-blocking rather than a true ring buffer with a
+// blocking wait: at this project's scale (single-digit channels, the Lua
+// pump polling every CHANNEL_REGISTRY_POLL... see lua_pump) a full buffer
+// is a push-side backpressure signal, same role as the real USB
+// hardware's own NAK (DESIGN.md §8), not a queue depth to tune.
+#define CHANNEL_REGISTRY_PENDING_DATA_BYTES 512
+
 esp_err_t channel_registry_init(void);
 void channel_registry_deinit(void);
 
@@ -69,6 +77,23 @@ esp_err_t channel_registry_pick_due_channel(uint32_t now_ticks, char *out_channe
 // script loaded are never considered stalled - there would be nothing to
 // recreate. Returns the number of channels recovered this way.
 int channel_registry_recover_stalled_channels(uint32_t now_ticks, uint32_t stall_ticks);
+
+// Appends bytes for a channel to drain on its next resume (DESIGN.md §9's
+// producer/consumer split: called from a different task than the one
+// driving resume - a future USB Host CDC task - so neither ever blocks on
+// the other). Non-blocking: returns ESP_ERR_NO_MEM if the channel's
+// CHANNEL_REGISTRY_PENDING_DATA_BYTES buffer doesn't have room right now;
+// the caller decides whether to retry or drop. Returns ESP_ERR_NOT_FOUND
+// if the channel isn't registered.
+esp_err_t channel_registry_push_data(const char *channel, const uint8_t *data, size_t len);
+
+// Finds any one registered channel with non-empty pending data (pushed via
+// channel_registry_push_data()) and drains it directly into buf, so the
+// Lua pump doesn't need to enumerate channels itself to find one. Copies
+// the drained channel's name into out_channel. Returns the number of
+// bytes drained (0 if no channel currently has pending data), or <0 if
+// out_channel/buf are invalid.
+int channel_registry_pick_channel_with_data(char *out_channel, size_t out_channel_len, uint8_t *buf, size_t maxlen);
 
 #ifdef __cplusplus
 }
