@@ -79,6 +79,7 @@ Key hardware constraints to design around:
     usb_host_bridge/      # real impl: USB Host CDC-ACM task, ring buffer handoff
     i2c_poll_source/      # real impl: I2C register polling
     lua_sandbox/          # lua_State setup, allocator, hooks, safe API — hardware-independent
+    channel_registry/     # channel name -> lua_sandbox_t* map, one sandbox per channel (§9.1) — hardware-independent
     metrics_store/        # metric map + staleness logic — hardware-independent
     http_api/              # /metrics and /scripts endpoints — hardware-independent except for the httpd dependency
     net_eth/               # W5500 init, SNTP — real hardware only
@@ -431,13 +432,19 @@ a priority queue unless the channel count grows far beyond what's in scope
 here.
 
 Each channel's coroutine is independent — separate local state (its own
-`buffer`, its own `next_run_ticks`) — but all channels share one Lua
-`lua_State` and the same set of registered C API functions
-(`set_metric`, `i2c_read`, …) and the same memory budget, unless profiling
-later shows that one misbehaving script's memory pressure needs to be
-isolated from another's (separate `lua_State` per channel), which is a
-straightforward follow-up if needed but adds per-state overhead not
-justified until it's actually a problem.
+`buffer`, its own `next_run_ticks`). **Revised from the original plan**:
+rather than all channels sharing one `lua_State`, each channel gets its
+own `lua_sandbox_t` (own root state, own memory cap, own single
+coroutine) - this is what `components/lua_sandbox/` actually implements,
+one instance per channel rather than one shared instance with multiple
+coroutine slots. At the expected scale (single-digit channels), N times
+the library-bootstrap cost (opening `base`/`table`/`string`/`math`/
+`coroutine` per sandbox) is negligible against the 8 MB PSRAM budget, and
+it buys the per-channel memory isolation the original plan explicitly
+deferred as a "follow-up if needed" - here for free, not as a later
+optimization. The channel registry (not yet built) holds the
+`channel name → lua_sandbox_t*` mapping; `lua_sandbox_create()` is a
+plain, repeatable call with no shared state between instances.
 
 ### 9.2 Sandboxing — required, since scripts are user-supplied over HTTP
 
