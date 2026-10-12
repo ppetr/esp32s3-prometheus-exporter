@@ -8,3 +8,7 @@ CONFIG_SPIRAM_MODE_OCT=y
 
 # Board has 16 MB flash (DESIGN.md §2); default Kconfig is 2 MB.
 CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+
+# No UART0 bridge wired on this board; native USB (USB-Serial/JTAG) is the
+# only accessible console port, so make it primary (not just secondary).
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
