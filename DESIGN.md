@@ -362,9 +362,8 @@ define `LUA_32BITS` sees `luaconf.h`'s non-32BITS defaults (`double`/
 `int64_t`) while the actual compiled library uses `float`/`int32_t` —
 every `lua_tonumber`/`lua_tointeger` call silently reads garbage. Fixed in
 `components/lua_sandbox/CMakeLists.txt` with the same `target_compile_definitions(...
-PRIVATE LUA_32BITS=1)` line. Worth reporting upstream
-(`espressif/idf-extra-components`); not done yet pending a decision on
-whether to.
+PRIVATE LUA_32BITS=1)` line. Reported upstream:
+[espressif/idf-extra-components#873](https://github.com/espressif/idf-extra-components/issues/873).
 
 **Implemented contract** (`lua_sandbox_load`/`lua_sandbox_resume`, in
 `components/lua_sandbox/`): the uploaded script's text *is* the coroutine
