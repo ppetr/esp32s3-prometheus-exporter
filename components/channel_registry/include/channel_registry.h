@@ -36,11 +36,39 @@ esp_err_t channel_registry_load_script(const char *channel, const char *source, 
                                         size_t err_buf_len);
 
 // Resumes the named channel's coroutine - a thin, locked passthrough to
-// lua_sandbox_resume() (see lua_sandbox.h for parameter semantics).
-// Returns ESP_ERR_NOT_FOUND if the channel isn't registered.
+// lua_sandbox_resume() (see lua_sandbox.h for parameter semantics). On a
+// successful resume, also records the tick it ran at (for
+// channel_registry_recover_stalled_channels()) and, from *yield_ms_out,
+// when it's next due (for channel_registry_pick_due_channel()) - both
+// using the real clock, not a caller-supplied tick. Returns
+// ESP_ERR_NOT_FOUND if the channel isn't registered.
 esp_err_t channel_registry_resume(const char *channel, const uint8_t *data, size_t len,
                                    int instruction_limit, uint32_t *yield_ms_out, char *err_buf,
                                    size_t err_buf_len);
+
+// Picks the channel most overdue to run (DESIGN.md §9.1's "earliest due
+// coroutine" selection): the registered channel with the smallest
+// next_run_ticks that is <= now_ticks. A freshly added channel, or one
+// whose last resume didn't request a delay (yield_ms was 0 - e.g. a
+// stream-driven yield), is always due.
+//
+// On success, copies the due channel's name into out_channel (size
+// out_channel_len) and returns ESP_OK. If no channel is due yet, returns
+// ESP_ERR_NOT_FOUND and sets *out_wait_ticks to how long until the
+// earliest one becomes due (so the pump loop knows how long it can sleep
+// rather than busy-poll); if no channel is registered at all, returns
+// ESP_ERR_NOT_FOUND and leaves *out_wait_ticks untouched.
+esp_err_t channel_registry_pick_due_channel(uint32_t now_ticks, char *out_channel, size_t out_channel_len,
+                                             uint32_t *out_wait_ticks);
+
+// Finds channels whose coroutine hasn't been successfully resumed in over
+// stall_ticks (DESIGN.md §9.2's logical timeout for a stalled mid-message
+// coroutine - e.g. a device unplugged mid-message, so nothing ever
+// triggers another resume) and discards + recreates their coroutine from
+// the last successfully loaded script. Channels that have never had a
+// script loaded are never considered stalled - there would be nothing to
+// recreate. Returns the number of channels recovered this way.
+int channel_registry_recover_stalled_channels(uint32_t now_ticks, uint32_t stall_ticks);
 
 #ifdef __cplusplus
 }

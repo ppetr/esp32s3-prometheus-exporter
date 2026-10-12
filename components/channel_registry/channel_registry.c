@@ -1,15 +1,31 @@
 #include "channel_registry.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
+#include "freertos/task.h"
 #include "lua_sandbox.h"
 
 typedef struct {
     char name[CHANNEL_REGISTRY_MAX_NAME_LEN];
     bool in_use;
     lua_sandbox_t *sandbox;
+
+    // Scheduling (DESIGN.md §9.1-§9.2). next_run_ticks/last_resume_tick are
+    // written using the real clock (xTaskGetTickCount(), inside
+    // channel_registry_resume()/_load_script()) but read against a
+    // caller-supplied now_ticks in channel_registry_pick_due_channel()/
+    // _recover_stalled_channels() - same split as metrics_store's
+    // write-real-time/read-with-injectable-now (DESIGN.md §6.3), so those
+    // two decision functions stay unit-testable without real delays.
+    TickType_t next_run_ticks;
+    TickType_t last_resume_tick;
+    // Heap-allocated copy of the last successfully loaded script, or NULL
+    // if none has been loaded yet - needed to recreate a stalled channel's
+    // coroutine from scratch with the same script.
+    char *last_source;
 } channel_entry_t;
 
 static channel_entry_t s_channels[CHANNEL_REGISTRY_MAX_CHANNELS];
@@ -42,6 +58,7 @@ void channel_registry_deinit(void) {
     for (int i = 0; i < CHANNEL_REGISTRY_MAX_CHANNELS; i++) {
         if (s_channels[i].in_use) {
             lua_sandbox_destroy(s_channels[i].sandbox);
+            free(s_channels[i].last_source);
         }
     }
     vSemaphoreDelete(s_lock);
@@ -110,6 +127,7 @@ esp_err_t channel_registry_remove_channel(const char *channel) {
         err = ESP_ERR_NOT_FOUND;
     } else {
         lua_sandbox_destroy(entry->sandbox);
+        free(entry->last_source);
         memset(entry, 0, sizeof(*entry));
     }
     xSemaphoreGive(s_lock);
@@ -140,6 +158,22 @@ esp_err_t channel_registry_load_script(const char *channel, const char *source, 
         // The atomic swap itself: lua_sandbox_load() tears down the old
         // coroutine and installs the new one in one call.
         err = lua_sandbox_load(entry->sandbox, source);
+        if (err == ESP_OK) {
+            size_t source_len = strlen(source) + 1;
+            char *copy = malloc(source_len);
+            if (copy == NULL) {
+                err = ESP_ERR_NO_MEM;
+            } else {
+                memcpy(copy, source, source_len);
+                free(entry->last_source);
+                entry->last_source = copy;
+                // A freshly (re)loaded script hasn't had a chance to run
+                // yet - due immediately, and not stalled until it's had
+                // that chance.
+                entry->last_resume_tick = xTaskGetTickCount();
+                entry->next_run_ticks = entry->last_resume_tick;
+            }
+        }
     }
     xSemaphoreGive(s_lock);
     return err;
@@ -162,7 +196,78 @@ esp_err_t channel_registry_resume(const char *channel, const uint8_t *data, size
         err = ESP_ERR_NOT_FOUND;
     } else {
         err = lua_sandbox_resume(entry->sandbox, data, len, instruction_limit, yield_ms_out, err_buf, err_buf_len);
+        if (err == ESP_OK) {
+            entry->last_resume_tick = xTaskGetTickCount();
+            entry->next_run_ticks = entry->last_resume_tick + pdMS_TO_TICKS(*yield_ms_out);
+        }
     }
     xSemaphoreGive(s_lock);
     return err;
+}
+
+esp_err_t channel_registry_pick_due_channel(uint32_t now_ticks, char *out_channel, size_t out_channel_len,
+                                             uint32_t *out_wait_ticks) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (out_channel == NULL || out_channel_len == 0) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    channel_entry_t *best = NULL;
+    int32_t best_delta = 0;  // next_run_ticks - now_ticks for `best`; <= 0 means due.
+    for (int i = 0; i < CHANNEL_REGISTRY_MAX_CHANNELS; i++) {
+        if (!s_channels[i].in_use) {
+            continue;
+        }
+        int32_t delta = (int32_t)(s_channels[i].next_run_ticks - now_ticks);
+        if (best == NULL || delta < best_delta) {
+            best = &s_channels[i];
+            best_delta = delta;
+        }
+    }
+
+    esp_err_t err;
+    if (best == NULL) {
+        err = ESP_ERR_NOT_FOUND;
+    } else if (best_delta <= 0) {
+        snprintf(out_channel, out_channel_len, "%s", best->name);
+        err = ESP_OK;
+    } else {
+        if (out_wait_ticks != NULL) {
+            *out_wait_ticks = (uint32_t)best_delta;
+        }
+        err = ESP_ERR_NOT_FOUND;
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
+int channel_registry_recover_stalled_channels(uint32_t now_ticks, uint32_t stall_ticks) {
+    if (!s_initialized) {
+        return 0;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    int recovered = 0;
+    for (int i = 0; i < CHANNEL_REGISTRY_MAX_CHANNELS; i++) {
+        channel_entry_t *entry = &s_channels[i];
+        if (!entry->in_use || entry->last_source == NULL) {
+            continue;
+        }
+        int32_t idle = (int32_t)(now_ticks - entry->last_resume_tick);
+        if (idle <= (int32_t)stall_ticks) {
+            continue;
+        }
+        // Best-effort: if reloading fails, leave the stalled coroutine as
+        // it is rather than destroying it with nothing to replace it.
+        if (lua_sandbox_load(entry->sandbox, entry->last_source) == ESP_OK) {
+            entry->last_resume_tick = now_ticks;
+            entry->next_run_ticks = now_ticks;
+            recovered++;
+        }
+    }
+    xSemaphoreGive(s_lock);
+    return recovered;
 }
