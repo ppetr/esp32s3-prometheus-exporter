@@ -623,9 +623,16 @@ Linux target (`idf.py --preview set-target linux`) using Unity:
   detection for a stalled mid-message coroutine (§9.1).
 - `metrics_store`: staleness-threshold omission logic, the always-present
   health metric, Prometheus text-format output.
-- `http_api` request handling logic (script upload validation flow,
-  dry-run compile + atomic swap decision points) — the httpd plumbing
-  itself is not under test here, just the logic around it.
+- `channel_registry`: channel add/remove, and the script-upload decision
+  flow (dry-run compile against a throwaway state, then atomic swap only
+  on success, never disturbing a channel's existing script on a rejected
+  upload) — DESIGN.md §10's actual implementation.
+- `http_api_handle_script_upload` is a one-line passthrough to
+  `channel_registry_load_script()`, so its logic is covered by
+  `channel_registry`'s tests, not a dedicated test of its own —
+  `http_api` itself isn't in the Tier 1 build at all, since it
+  `PRIV_REQUIRES esp_http_server` (and transitively `lwip`), unproven on
+  the Linux target and not worth pulling in for a one-liner.
 
 This tier is the bulk of the test suite by design — it is where almost all
 of the actually interesting logic in this project lives (§9, §6, §10), and

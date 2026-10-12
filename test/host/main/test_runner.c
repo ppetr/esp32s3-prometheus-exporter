@@ -36,6 +36,16 @@ extern void test_lua_sandbox_load_replaces_previous_coroutine(void);
 extern void test_lua_sandbox_instruction_hook_fires_on_runaway_script(void);
 extern void test_lua_sandbox_memory_cap_enforced(void);
 
+extern void test_channel_registry_add_and_remove_basic(void);
+extern void test_channel_registry_add_duplicate_returns_invalid_state(void);
+extern void test_channel_registry_add_exceeds_capacity_returns_no_mem(void);
+extern void test_channel_registry_remove_unknown_returns_not_found(void);
+extern void test_channel_registry_remove_then_readd_same_name(void);
+extern void test_channel_registry_load_script_unknown_channel_returns_not_found(void);
+extern void test_channel_registry_resume_unknown_channel_returns_not_found(void);
+extern void test_channel_registry_load_and_resume_end_to_end(void);
+extern void test_channel_registry_rejected_upload_does_not_clobber_existing_script(void);
+
 // UNITY_END() returns the failure count; exit with it so the Linux-target
 // binary terminates instead of idling in the FreeRTOS scheduler (DESIGN.md
 // §12.2 relies on this to run as a plain host-native test binary).
@@ -73,5 +83,14 @@ void app_main(void) {
     RUN_TEST(test_lua_sandbox_load_replaces_previous_coroutine);
     RUN_TEST(test_lua_sandbox_instruction_hook_fires_on_runaway_script);
     RUN_TEST(test_lua_sandbox_memory_cap_enforced);
+    RUN_TEST(test_channel_registry_add_and_remove_basic);
+    RUN_TEST(test_channel_registry_add_duplicate_returns_invalid_state);
+    RUN_TEST(test_channel_registry_add_exceeds_capacity_returns_no_mem);
+    RUN_TEST(test_channel_registry_remove_unknown_returns_not_found);
+    RUN_TEST(test_channel_registry_remove_then_readd_same_name);
+    RUN_TEST(test_channel_registry_load_script_unknown_channel_returns_not_found);
+    RUN_TEST(test_channel_registry_resume_unknown_channel_returns_not_found);
+    RUN_TEST(test_channel_registry_load_and_resume_end_to_end);
+    RUN_TEST(test_channel_registry_rejected_upload_does_not_clobber_existing_script);
     exit(UNITY_END());
 }
