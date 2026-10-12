@@ -687,6 +687,12 @@ Linux target (`idf.py --preview set-target linux`) using Unity:
   decision functions from §9.1/§9.2: "earliest due coroutine" selection
   and stalled-channel recovery, both exercised with an injected
   `now_ticks` rather than real delays.
+- `lua_pump_step()`: the actual pass-draining-data/resuming-due-channel/
+  recovering-stalled-channels orchestration, as a plain function
+  independent of the real FreeRTOS task. `lua_pump_start()`/`_stop()`
+  (the real task, Core 1 pinned) get one lifecycle-only test on the Linux
+  target too - it does support real tasks - but only checks start/run/stop
+  doesn't crash or leak, not the task's real-time behavior.
 - `http_api_handle_script_upload` is a one-line passthrough to
   `channel_registry_load_script()`, so its logic is covered by
   `channel_registry`'s tests, not a dedicated test of its own —

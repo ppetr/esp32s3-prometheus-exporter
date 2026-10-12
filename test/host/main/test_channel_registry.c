@@ -236,3 +236,76 @@ void test_channel_registry_recover_stalled_channels_recreates_coroutine(void) {
 
     channel_registry_deinit();
 }
+
+// A stream-driven channel paused mid-message via a plain coroutine.yield()
+// (no value) must not look "due" again on its own - only new pending data
+// or a future numeric yield should wake it (DESIGN.md §9.1). Otherwise the
+// scheduler would spuriously re-resume it with no data.
+void test_channel_registry_no_value_yield_does_not_reschedule_poll(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_add_channel("dev0", TYPICAL_MAX_MEMORY));
+
+    char err_buf[128] = {0};
+    TEST_ASSERT_EQUAL(ESP_OK,
+                       channel_registry_load_script("dev0", "coroutine.yield()\ncoroutine.yield()", err_buf,
+                                                      sizeof(err_buf)));
+
+    TickType_t now = xTaskGetTickCount();
+    uint32_t yield_ms = 123;
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_resume("dev0", NULL, 0, 10000, &yield_ms, err_buf, sizeof(err_buf)));
+    TEST_ASSERT_EQUAL(0, yield_ms);
+
+    char out[CHANNEL_REGISTRY_MAX_NAME_LEN];
+    TEST_ASSERT_EQUAL(ESP_ERR_NOT_FOUND,
+                       channel_registry_pick_due_channel(now + pdMS_TO_TICKS(120000), out, sizeof(out), NULL));
+
+    channel_registry_deinit();
+}
+
+void test_channel_registry_push_data_unknown_channel_returns_not_found(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
+    TEST_ASSERT_EQUAL(ESP_ERR_NOT_FOUND, channel_registry_push_data("nope", (const uint8_t *)"x", 1));
+    channel_registry_deinit();
+}
+
+void test_channel_registry_pick_channel_with_data_returns_zero_when_none_pending(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_add_channel("dev0", TYPICAL_MAX_MEMORY));
+
+    char out[CHANNEL_REGISTRY_MAX_NAME_LEN] = {0};
+    uint8_t buf[64];
+    TEST_ASSERT_EQUAL(0, channel_registry_pick_channel_with_data(out, sizeof(out), buf, sizeof(buf)));
+
+    channel_registry_deinit();
+}
+
+void test_channel_registry_push_data_and_pick_channel_with_data(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_add_channel("dev0", TYPICAL_MAX_MEMORY));
+
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_push_data("dev0", (const uint8_t *)"ab", 2));
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_push_data("dev0", (const uint8_t *)"cd", 2));
+
+    char out[CHANNEL_REGISTRY_MAX_NAME_LEN] = {0};
+    uint8_t buf[64] = {0};
+    int n = channel_registry_pick_channel_with_data(out, sizeof(out), buf, sizeof(buf));
+    TEST_ASSERT_EQUAL(4, n);
+    TEST_ASSERT_EQUAL_STRING("dev0", out);
+    TEST_ASSERT_EQUAL_MEMORY("abcd", buf, 4);
+
+    // Drained - nothing left pending.
+    TEST_ASSERT_EQUAL(0, channel_registry_pick_channel_with_data(out, sizeof(out), buf, sizeof(buf)));
+
+    channel_registry_deinit();
+}
+
+void test_channel_registry_push_data_full_buffer_returns_no_mem(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_add_channel("dev0", TYPICAL_MAX_MEMORY));
+
+    uint8_t chunk[CHANNEL_REGISTRY_PENDING_DATA_BYTES] = {0};
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_push_data("dev0", chunk, sizeof(chunk)));
+    TEST_ASSERT_EQUAL(ESP_ERR_NO_MEM, channel_registry_push_data("dev0", (const uint8_t *)"x", 1));
+
+    channel_registry_deinit();
+}

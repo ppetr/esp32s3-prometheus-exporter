@@ -16,7 +16,8 @@ cmake_minimum_required(VERSION 3.16)
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/../../components/metrics_store"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/lua_sandbox"
-    "${CMAKE_CURRENT_LIST_DIR}/../../components/channel_registry")
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/channel_registry"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/lua_pump")
 
 # EXTRA_COMPONENT_DIRS otherwise forces a non-minimal build that expands
 # requirements for every component under $IDF_PATH/components, which hits an

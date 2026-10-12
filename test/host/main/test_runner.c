@@ -52,6 +52,17 @@ extern void test_channel_registry_pick_due_channel_picks_most_overdue_among_seve
 extern void test_channel_registry_recover_stalled_channels_ignores_channel_without_script(void);
 extern void test_channel_registry_recover_stalled_channels_ignores_fresh_channels(void);
 extern void test_channel_registry_recover_stalled_channels_recreates_coroutine(void);
+extern void test_channel_registry_no_value_yield_does_not_reschedule_poll(void);
+extern void test_channel_registry_push_data_unknown_channel_returns_not_found(void);
+extern void test_channel_registry_pick_channel_with_data_returns_zero_when_none_pending(void);
+extern void test_channel_registry_push_data_and_pick_channel_with_data(void);
+extern void test_channel_registry_push_data_full_buffer_returns_no_mem(void);
+
+extern void test_lua_pump_step_returns_false_when_nothing_to_do(void);
+extern void test_lua_pump_step_drains_pending_data(void);
+extern void test_lua_pump_step_resumes_due_poll_channel(void);
+extern void test_lua_pump_step_reports_error_via_metrics_store(void);
+extern void test_lua_pump_start_stop_lifecycle(void);
 
 // UNITY_END() returns the failure count; exit with it so the Linux-target
 // binary terminates instead of idling in the FreeRTOS scheduler (DESIGN.md
@@ -106,5 +117,15 @@ void app_main(void) {
     RUN_TEST(test_channel_registry_recover_stalled_channels_ignores_channel_without_script);
     RUN_TEST(test_channel_registry_recover_stalled_channels_ignores_fresh_channels);
     RUN_TEST(test_channel_registry_recover_stalled_channels_recreates_coroutine);
+    RUN_TEST(test_channel_registry_no_value_yield_does_not_reschedule_poll);
+    RUN_TEST(test_channel_registry_push_data_unknown_channel_returns_not_found);
+    RUN_TEST(test_channel_registry_pick_channel_with_data_returns_zero_when_none_pending);
+    RUN_TEST(test_channel_registry_push_data_and_pick_channel_with_data);
+    RUN_TEST(test_channel_registry_push_data_full_buffer_returns_no_mem);
+    RUN_TEST(test_lua_pump_step_returns_false_when_nothing_to_do);
+    RUN_TEST(test_lua_pump_step_drains_pending_data);
+    RUN_TEST(test_lua_pump_step_resumes_due_poll_channel);
+    RUN_TEST(test_lua_pump_step_reports_error_via_metrics_store);
+    RUN_TEST(test_lua_pump_start_stop_lifecycle);
     exit(UNITY_END());
 }
