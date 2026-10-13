@@ -51,12 +51,14 @@ static void script_path(char *out, size_t out_len, const char *channel, bool new
     snprintf(out, out_len, "%s/parser_%s%s.lua", HTTP_API_LITTLEFS_BASE_PATH, channel, new_suffix ? "_new" : "");
 }
 
-// Persists a validated script to flash so it survives a reboot (DESIGN.md
-// §10 points 2-3): write to a "_new" file, then atomically rename it over
-// the active one. Best-effort - the live swap already happened in
-// channel_registry by the time this runs, so a failure here is a durability
-// problem, not a correctness one; just log it.
-static void persist_script(const char *channel, const char *source, size_t len) {
+// Persists a validated script to flash (DESIGN.md §10 points 2-3): write
+// to a "_new" file, then atomically rename it over the active one. Called
+// BEFORE the live swap (channel_registry_validate_script() has already
+// run by this point, never channel_registry_load_script()) specifically
+// so a failure here can be reported as a clean upload failure with no
+// live effect at all, rather than a channel silently running a script
+// that won't survive its next reboot.
+static esp_err_t persist_script(const char *channel, const char *source, size_t len) {
     char new_path[96];
     char active_path[96];
     script_path(new_path, sizeof(new_path), channel, true);
@@ -64,21 +66,23 @@ static void persist_script(const char *channel, const char *source, size_t len) 
 
     FILE *f = fopen(new_path, "w");
     if (f == NULL) {
-        ESP_LOGW(TAG, "persist_script: failed to open %s for writing", new_path);
-        return;
+        ESP_LOGE(TAG, "persist_script: failed to open %s for writing", new_path);
+        return ESP_FAIL;
     }
     size_t written = fwrite(source, 1, len, f);
     fclose(f);
     if (written != len) {
-        ESP_LOGW(TAG, "persist_script: short write to %s", new_path);
+        ESP_LOGE(TAG, "persist_script: short write to %s", new_path);
         remove(new_path);
-        return;
+        return ESP_FAIL;
     }
 
     remove(active_path);  // LittleFS rename() doesn't overwrite an existing destination.
     if (rename(new_path, active_path) != 0) {
-        ESP_LOGW(TAG, "persist_script: rename %s -> %s failed", new_path, active_path);
+        ESP_LOGE(TAG, "persist_script: rename %s -> %s failed", new_path, active_path);
+        return ESP_FAIL;
     }
+    return ESP_OK;
 }
 
 static esp_err_t scripts_post_handler(httpd_req_t *req) {
@@ -114,14 +118,27 @@ static esp_err_t scripts_post_handler(httpd_req_t *req) {
     }
     body[received] = '\0';
 
+    // Validate -> persist -> swap, in that order (DESIGN.md §10): nothing
+    // about the channel's live state changes until the script is already
+    // durable on flash, so a persist failure is a clean upload failure,
+    // never a channel silently running something that won't survive its
+    // next reboot.
     char err_buf[128] = {0};
-    esp_err_t err = http_api_handle_script_upload(channel, body, err_buf, sizeof(err_buf));
+    esp_err_t err = channel_registry_validate_script(channel, body, err_buf, sizeof(err_buf));
 
     esp_err_t send_err;
     switch (err) {
         case ESP_OK:
-            persist_script(channel, body, received);
-            send_err = httpd_resp_sendstr(req, "OK");
+            if (persist_script(channel, body, received) != ESP_OK) {
+                send_err = httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "failed to persist script");
+                break;
+            }
+            // Already validated above; this repeats that check but is the
+            // only call that actually swaps the live coroutine in.
+            err = http_api_handle_script_upload(channel, body, err_buf, sizeof(err_buf));
+            send_err = (err == ESP_OK) ? httpd_resp_sendstr(req, "OK")
+                                        : httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
+                                                               "persisted but failed to apply live");
             break;
         case ESP_ERR_INVALID_ARG:
             httpd_resp_set_status(req, "400 Bad Request");
