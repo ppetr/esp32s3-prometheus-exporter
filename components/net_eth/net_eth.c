@@ -10,6 +10,7 @@
 #include "esp_mac.h"
 #include "esp_netif.h"
 #include "esp_sntp.h"
+#include "metrics_store.h"
 
 static const char *TAG = "net_eth";
 
@@ -26,10 +27,18 @@ static void eth_event_handler(void *arg, esp_event_base_t event_base, int32_t ev
             uint8_t mac_addr[6] = {0};
             esp_eth_ioctl(eth_handle, ETH_CMD_G_MAC_ADDR, mac_addr);
             ESP_LOGI(TAG, "link up, MAC " MACSTR, MAC2STR(mac_addr));
+
+            eth_speed_t speed = ETH_SPEED_10M;
+            eth_duplex_t duplex = ETH_DUPLEX_HALF;
+            esp_eth_ioctl(eth_handle, ETH_CMD_G_SPEED, &speed);
+            esp_eth_ioctl(eth_handle, ETH_CMD_G_DUPLEX_MODE, &duplex);
+            int speed_mbps = (speed == ETH_SPEED_1000M) ? 1000 : (speed == ETH_SPEED_100M) ? 100 : 10;
+            metrics_store_set_eth_link(true, speed_mbps, duplex == ETH_DUPLEX_FULL);
             break;
         }
         case ETHERNET_EVENT_DISCONNECTED:
             ESP_LOGW(TAG, "link down");
+            metrics_store_set_eth_link(false, 0, false);
             break;
         default:
             break;

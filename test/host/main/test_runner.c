@@ -23,6 +23,12 @@ extern void test_metrics_store_histogram_observe_and_format(void);
 extern void test_metrics_store_histogram_reinit_resets_counts(void);
 extern void test_metrics_store_histogram_omitted_when_stale(void);
 extern void test_metrics_store_all_metric_slots_can_be_histograms(void);
+extern void test_metrics_store_memory_info_omitted_until_set(void);
+extern void test_metrics_store_memory_info_included_when_set(void);
+extern void test_metrics_store_cpu_usage_included_when_set(void);
+extern void test_metrics_store_eth_link_up_includes_speed_and_duplex(void);
+extern void test_metrics_store_eth_link_down_omits_speed_and_duplex(void);
+extern void test_metrics_store_task_stacks_included_when_set(void);
 
 extern void test_lua_sandbox_create_destroy_basic(void);
 extern void test_lua_sandbox_check_syntax_accepts_valid_source(void);
@@ -99,6 +105,12 @@ void app_main(void) {
     RUN_TEST(test_metrics_store_histogram_reinit_resets_counts);
     RUN_TEST(test_metrics_store_histogram_omitted_when_stale);
     RUN_TEST(test_metrics_store_all_metric_slots_can_be_histograms);
+    RUN_TEST(test_metrics_store_memory_info_omitted_until_set);
+    RUN_TEST(test_metrics_store_memory_info_included_when_set);
+    RUN_TEST(test_metrics_store_cpu_usage_included_when_set);
+    RUN_TEST(test_metrics_store_eth_link_up_includes_speed_and_duplex);
+    RUN_TEST(test_metrics_store_eth_link_down_omits_speed_and_duplex);
+    RUN_TEST(test_metrics_store_task_stacks_included_when_set);
     RUN_TEST(test_lua_sandbox_create_destroy_basic);
     RUN_TEST(test_lua_sandbox_check_syntax_accepts_valid_source);
     RUN_TEST(test_lua_sandbox_check_syntax_rejects_invalid_source);

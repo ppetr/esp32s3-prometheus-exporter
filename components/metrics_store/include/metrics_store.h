@@ -69,6 +69,30 @@ esp_err_t metrics_store_histogram_observe(const char *channel, const char *metri
 // channel entry on first use.
 esp_err_t metrics_store_set_channel_status(const char *channel, bool online, const char *lua_error);
 
+// Process-wide memory snapshot (DESIGN.md §7), refreshed by sys_metrics
+// right before each /metrics scrape. Omitted from the exposition entirely
+// until the first call (e.g. on the Tier 1 host test target, which never
+// calls this).
+esp_err_t metrics_store_set_memory_info(size_t heap_free_bytes, size_t heap_total_bytes,
+                                         size_t psram_free_bytes, size_t psram_total_bytes);
+
+// Process-wide CPU usage, percent (0.0-100.0) per core; pass -1 for a core
+// that doesn't exist or isn't tracked. Refreshed the same way as memory
+// info (DESIGN.md §7).
+esp_err_t metrics_store_set_cpu_usage(float core0_percent, float core1_percent);
+
+// Ethernet link status (DESIGN.md §6.4/§13), pushed by net_eth whenever it
+// changes. speed_mbps/full_duplex are only meaningful while up is true.
+esp_err_t metrics_store_set_eth_link(bool up, int speed_mbps, bool full_duplex);
+
+// Replaces the whole stack-headroom table (DESIGN.md §7) with the given
+// task name/free-bytes pairs - not merged with any previous call, so a
+// task that disappears between scrapes stops being reported instead of
+// showing a stale value. count is silently truncated to this store's own
+// capacity rather than failing, since this is a diagnostic, not core
+// functionality.
+esp_err_t metrics_store_set_task_stacks(const char *const *names, const uint32_t *stack_free_bytes, size_t count);
+
 // Called from the HTTP handler (Core 0). Writes Prometheus text exposition
 // format into buf, omitting metrics older than the staleness threshold
 // (DESIGN.md §6.3). Returns bytes written, or <0 if buf was too small.

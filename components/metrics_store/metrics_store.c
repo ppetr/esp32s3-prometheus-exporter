@@ -52,9 +52,37 @@ typedef struct {
     metric_entry_t metrics[METRICS_STORE_MAX_METRICS_PER_CHANNEL];
 } channel_entry_t;
 
+// One task's stack headroom (DESIGN.md §7), as last reported by
+// sys_metrics_refresh(). Not channel-scoped - a "task" label, not
+// "channel".
+#define METRICS_STORE_MAX_TASKS 32
+
+typedef struct {
+    char name[METRICS_STORE_MAX_NAME_LEN];
+    uint32_t stack_free_bytes;
+} task_stack_entry_t;
+
 static channel_entry_t s_channels[METRICS_STORE_MAX_CHANNELS];
 static SemaphoreHandle_t s_lock;
 static bool s_initialized;
+
+// Process-wide diagnostics (DESIGN.md §7), pushed by sys_metrics/net_eth
+// and read back by metrics_store_format_at() - same "write now, read
+// later" split as channel metrics, just without a channel label since
+// these aren't scoped to any one channel.
+static bool s_have_memory_info;
+static size_t s_heap_free_bytes, s_heap_total_bytes, s_psram_free_bytes, s_psram_total_bytes;
+
+static bool s_have_cpu_usage;
+static float s_cpu0_usage_percent, s_cpu1_usage_percent;
+
+static bool s_have_eth_link;
+static bool s_eth_link_up;
+static int s_eth_link_speed_mbps;
+static bool s_eth_full_duplex;
+
+static task_stack_entry_t s_task_stacks[METRICS_STORE_MAX_TASKS];
+static int s_task_stack_count;
 
 esp_err_t metrics_store_init(void) {
     if (s_initialized) {
@@ -65,6 +93,10 @@ esp_err_t metrics_store_init(void) {
         return ESP_ERR_NO_MEM;
     }
     memset(s_channels, 0, sizeof(s_channels));
+    s_have_memory_info = false;
+    s_have_cpu_usage = false;
+    s_have_eth_link = false;
+    s_task_stack_count = 0;
     s_initialized = true;
     return ESP_OK;
 }
@@ -327,6 +359,67 @@ esp_err_t metrics_store_set_channel_status(const char *channel, bool online, con
     return err;
 }
 
+esp_err_t metrics_store_set_memory_info(size_t heap_free_bytes, size_t heap_total_bytes, size_t psram_free_bytes,
+                                         size_t psram_total_bytes) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_heap_free_bytes = heap_free_bytes;
+    s_heap_total_bytes = heap_total_bytes;
+    s_psram_free_bytes = psram_free_bytes;
+    s_psram_total_bytes = psram_total_bytes;
+    s_have_memory_info = true;
+    xSemaphoreGive(s_lock);
+    return ESP_OK;
+}
+
+esp_err_t metrics_store_set_cpu_usage(float core0_percent, float core1_percent) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_cpu0_usage_percent = core0_percent;
+    s_cpu1_usage_percent = core1_percent;
+    s_have_cpu_usage = true;
+    xSemaphoreGive(s_lock);
+    return ESP_OK;
+}
+
+esp_err_t metrics_store_set_eth_link(bool up, int speed_mbps, bool full_duplex) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_eth_link_up = up;
+    s_eth_link_speed_mbps = speed_mbps;
+    s_eth_full_duplex = full_duplex;
+    s_have_eth_link = true;
+    xSemaphoreGive(s_lock);
+    return ESP_OK;
+}
+
+esp_err_t metrics_store_set_task_stacks(const char *const *names, const uint32_t *stack_free_bytes, size_t count) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (names == NULL || stack_free_bytes == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (count > METRICS_STORE_MAX_TASKS) {
+        count = METRICS_STORE_MAX_TASKS;  // diagnostic only - truncate rather than fail
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    for (size_t i = 0; i < count; i++) {
+        snprintf(s_task_stacks[i].name, sizeof(s_task_stacks[i].name), "%s", names[i]);
+        s_task_stacks[i].stack_free_bytes = stack_free_bytes[i];
+    }
+    s_task_stack_count = (int)count;
+    xSemaphoreGive(s_lock);
+    return ESP_OK;
+}
+
 // Escapes backslash, double-quote and newline for use inside a Prometheus
 // label value, truncating (without overflowing dst) if it doesn't fit.
 static void escape_label_value(const char *src, char *dst, size_t dst_len) {
@@ -410,6 +503,40 @@ int metrics_store_format_at(char *buf, size_t buf_len, uint32_t now_ticks) {
     // resolution for exactly the long-running case uptime is for.
     bool overflow = !append(buf, buf_len, &offset, "esp32_usb_bridge_uptime_seconds %.3f\n",
                              (double)now_ticks * portTICK_PERIOD_MS / 1000.0);
+
+    if (!overflow && s_have_memory_info) {
+        overflow = !append(buf, buf_len, &offset,
+                            "esp32_usb_bridge_heap_free_bytes %zu\n"
+                            "esp32_usb_bridge_heap_total_bytes %zu\n"
+                            "esp32_usb_bridge_psram_free_bytes %zu\n"
+                            "esp32_usb_bridge_psram_total_bytes %zu\n",
+                            s_heap_free_bytes, s_heap_total_bytes, s_psram_free_bytes, s_psram_total_bytes);
+    }
+
+    if (!overflow && s_have_cpu_usage) {
+        overflow = !append(buf, buf_len, &offset,
+                            "esp32_usb_bridge_cpu_usage_percent{core=\"0\"} %.1f\n"
+                            "esp32_usb_bridge_cpu_usage_percent{core=\"1\"} %.1f\n",
+                            (double)s_cpu0_usage_percent, (double)s_cpu1_usage_percent);
+    }
+
+    if (!overflow && s_have_eth_link) {
+        if (s_eth_link_up) {
+            overflow = !append(buf, buf_len, &offset,
+                                "esp32_usb_bridge_eth_link_up 1\n"
+                                "esp32_usb_bridge_eth_link_speed_mbps %d\n"
+                                "esp32_usb_bridge_eth_full_duplex %d\n",
+                                s_eth_link_speed_mbps, s_eth_full_duplex ? 1 : 0);
+        } else {
+            overflow = !append(buf, buf_len, &offset, "esp32_usb_bridge_eth_link_up 0\n");
+        }
+    }
+
+    for (int i = 0; i < s_task_stack_count && !overflow; i++) {
+        overflow = !append(buf, buf_len, &offset, "esp32_usb_bridge_task_stack_free_bytes{task=\"%s\"} %lu\n",
+                            s_task_stacks[i].name, (unsigned long)s_task_stacks[i].stack_free_bytes);
+    }
+
     for (int i = 0; i < METRICS_STORE_MAX_CHANNELS && !overflow; i++) {
         channel_entry_t *ch = &s_channels[i];
         if (!ch->in_use) {

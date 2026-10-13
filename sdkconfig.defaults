@@ -12,3 +12,8 @@ CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
 # No UART0 bridge wired on this board; native USB (USB-Serial/JTAG) is the
 # only accessible console port, so make it primary (not just secondary).
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# Per-task runtime accounting, needed for sys_metrics' CPU usage gauge
+# (DESIGN.md §7). Also pulls in configUSE_TRACE_FACILITY, needed for
+# uxTaskGetSystemState().
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y

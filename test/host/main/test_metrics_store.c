@@ -199,6 +199,67 @@ void test_metrics_store_histogram_omitted_when_stale(void) {
     TEST_ASSERT_NULL(strstr(buf, "lat_count{channel=\"dev0\"}"));
 }
 
+// Process-level diagnostics (DESIGN.md §7), same "write now, read later"
+// shape as uptime but via explicit setters rather than a live syscall -
+// sys_metrics/net_eth own the actual reads.
+
+void test_metrics_store_memory_info_omitted_until_set(void) {
+    char buf[512];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
+    TEST_ASSERT_NULL(strstr(buf, "esp32_usb_bridge_heap_free_bytes"));
+}
+
+void test_metrics_store_memory_info_included_when_set(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_set_memory_info(1000, 2000, 3000, 4000));
+
+    char buf[512];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_heap_free_bytes 1000\n"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_heap_total_bytes 2000\n"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_psram_free_bytes 3000\n"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_psram_total_bytes 4000\n"));
+}
+
+void test_metrics_store_cpu_usage_included_when_set(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_set_cpu_usage(12.5f, 87.0f));
+
+    char buf[512];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_cpu_usage_percent{core=\"0\"} 12.5\n"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_cpu_usage_percent{core=\"1\"} 87.0\n"));
+}
+
+void test_metrics_store_eth_link_up_includes_speed_and_duplex(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_set_eth_link(true, 100, true));
+
+    char buf[512];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_eth_link_up 1\n"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_eth_link_speed_mbps 100\n"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_eth_full_duplex 1\n"));
+}
+
+void test_metrics_store_eth_link_down_omits_speed_and_duplex(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_set_eth_link(false, 0, false));
+
+    char buf[512];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_eth_link_up 0\n"));
+    TEST_ASSERT_NULL(strstr(buf, "esp32_usb_bridge_eth_link_speed_mbps"));
+    TEST_ASSERT_NULL(strstr(buf, "esp32_usb_bridge_eth_full_duplex"));
+}
+
+void test_metrics_store_task_stacks_included_when_set(void) {
+    const char *names[] = {"lua_pump", "httpd"};
+    uint32_t free_bytes[] = {1234, 5678};
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_set_task_stacks(names, free_bytes, 2));
+
+    char buf[512];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_task_stack_free_bytes{task=\"lua_pump\"} 1234\n"));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_task_stack_free_bytes{task=\"httpd\"} 5678\n"));
+}
+
 void test_metrics_store_all_metric_slots_can_be_histograms(void) {
     char name[METRICS_STORE_MAX_NAME_LEN];
     float bounds[] = {10.0f};

@@ -10,6 +10,7 @@
 #include "esp_littlefs.h"
 #include "esp_log.h"
 #include "metrics_store.h"
+#include "sys_metrics.h"
 
 static const char *TAG = "http_api";
 
@@ -33,6 +34,7 @@ static esp_err_t metrics_get_handler(httpd_req_t *req) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "out of memory");
     }
 
+    sys_metrics_refresh();
     int len = metrics_store_format(buf, HTTP_API_METRICS_BUF_SIZE);
     if (len < 0) {
         free(buf);
