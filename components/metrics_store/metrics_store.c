@@ -81,6 +81,9 @@ static bool s_eth_link_up;
 static int s_eth_link_speed_mbps;
 static bool s_eth_full_duplex;
 
+static bool s_have_chip_temp;
+static float s_chip_temp_celsius;
+
 static task_stack_entry_t s_task_stacks[METRICS_STORE_MAX_TASKS];
 static int s_task_stack_count;
 
@@ -96,6 +99,7 @@ esp_err_t metrics_store_init(void) {
     s_have_memory_info = false;
     s_have_cpu_usage = false;
     s_have_eth_link = false;
+    s_have_chip_temp = false;
     s_task_stack_count = 0;
     s_initialized = true;
     return ESP_OK;
@@ -399,6 +403,17 @@ esp_err_t metrics_store_set_eth_link(bool up, int speed_mbps, bool full_duplex) 
     return ESP_OK;
 }
 
+esp_err_t metrics_store_set_chip_temp(float celsius) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_chip_temp_celsius = celsius;
+    s_have_chip_temp = true;
+    xSemaphoreGive(s_lock);
+    return ESP_OK;
+}
+
 esp_err_t metrics_store_set_task_stacks(const char *const *names, const uint32_t *stack_free_bytes, size_t count) {
     if (!s_initialized) {
         return ESP_ERR_INVALID_STATE;
@@ -518,6 +533,11 @@ int metrics_store_format_at(char *buf, size_t buf_len, uint32_t now_ticks) {
                             "esp32_usb_bridge_cpu_usage_percent{core=\"0\"} %.1f\n"
                             "esp32_usb_bridge_cpu_usage_percent{core=\"1\"} %.1f\n",
                             (double)s_cpu0_usage_percent, (double)s_cpu1_usage_percent);
+    }
+
+    if (!overflow && s_have_chip_temp) {
+        overflow = !append(buf, buf_len, &offset, "esp32_usb_bridge_chip_temp_celsius %.1f\n",
+                            (double)s_chip_temp_celsius);
     }
 
     if (!overflow && s_have_eth_link) {

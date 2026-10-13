@@ -26,6 +26,8 @@ extern void test_metrics_store_all_metric_slots_can_be_histograms(void);
 extern void test_metrics_store_memory_info_omitted_until_set(void);
 extern void test_metrics_store_memory_info_included_when_set(void);
 extern void test_metrics_store_cpu_usage_included_when_set(void);
+extern void test_metrics_store_chip_temp_omitted_until_set(void);
+extern void test_metrics_store_chip_temp_included_when_set(void);
 extern void test_metrics_store_eth_link_up_includes_speed_and_duplex(void);
 extern void test_metrics_store_eth_link_down_omits_speed_and_duplex(void);
 extern void test_metrics_store_task_stacks_included_when_set(void);
@@ -114,6 +116,8 @@ void app_main(void) {
     RUN_TEST(test_metrics_store_memory_info_omitted_until_set);
     RUN_TEST(test_metrics_store_memory_info_included_when_set);
     RUN_TEST(test_metrics_store_cpu_usage_included_when_set);
+    RUN_TEST(test_metrics_store_chip_temp_omitted_until_set);
+    RUN_TEST(test_metrics_store_chip_temp_included_when_set);
     RUN_TEST(test_metrics_store_eth_link_up_includes_speed_and_duplex);
     RUN_TEST(test_metrics_store_eth_link_down_omits_speed_and_duplex);
     RUN_TEST(test_metrics_store_task_stacks_included_when_set);

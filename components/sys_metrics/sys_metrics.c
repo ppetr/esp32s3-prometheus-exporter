@@ -3,11 +3,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "driver/temperature_sensor.h"
+#include "esp_err.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
 #include "metrics_store.h"
+
+static const char *TAG = "sys_metrics";
 
 // Bound on live task count this snapshot can cover; comfortably above what
 // this firmware actually creates (DESIGN.md §5). uxTaskGetSystemState()
@@ -73,7 +78,43 @@ static void refresh_cpu_and_stack_metrics(void) {
     free(tasks);
 }
 
+// -10..80 degC range (DESIGN.md §7) - matches ESP-IDF's own
+// temperature_sensor example and lands on the chip's most accurate
+// calibrated range (+-1 degC), comfortably covering realistic die
+// temperatures for this board (no RF, no heavy compute).
+static temperature_sensor_handle_t s_tsens;
+static bool s_tsens_failed;  // install/enable already tried and failed - don't retry every scrape
+
+static void refresh_chip_temp(void) {
+    if (s_tsens == NULL && !s_tsens_failed) {
+        temperature_sensor_config_t config = TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 50);
+        temperature_sensor_handle_t tsens = NULL;
+        esp_err_t err = temperature_sensor_install(&config, &tsens);
+        if (err == ESP_OK) {
+            err = temperature_sensor_enable(tsens);
+        }
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "chip temperature sensor unavailable: %s", esp_err_to_name(err));
+            if (tsens != NULL) {
+                temperature_sensor_uninstall(tsens);
+            }
+            s_tsens_failed = true;
+            return;
+        }
+        s_tsens = tsens;
+    }
+    if (s_tsens == NULL) {
+        return;
+    }
+
+    float celsius;
+    if (temperature_sensor_get_celsius(s_tsens, &celsius) == ESP_OK) {
+        metrics_store_set_chip_temp(celsius);
+    }
+}
+
 void sys_metrics_refresh(void) {
     refresh_memory_metrics();
     refresh_cpu_and_stack_metrics();
+    refresh_chip_temp();
 }

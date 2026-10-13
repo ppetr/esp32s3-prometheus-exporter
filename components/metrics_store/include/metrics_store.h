@@ -85,6 +85,12 @@ esp_err_t metrics_store_set_cpu_usage(float core0_percent, float core1_percent);
 // changes. speed_mbps/full_duplex are only meaningful while up is true.
 esp_err_t metrics_store_set_eth_link(bool up, int speed_mbps, bool full_duplex);
 
+// The chip's internal die temperature (DESIGN.md §7), read via ESP-IDF's
+// temperature_sensor driver. Omitted until the first call - e.g. if the
+// sensor failed to install, or on the Tier 1 host test target, which never
+// calls this.
+esp_err_t metrics_store_set_chip_temp(float celsius);
+
 // Replaces the whole stack-headroom table (DESIGN.md §7) with the given
 // task name/free-bytes pairs - not merged with any previous call, so a
 // task that disappears between scrapes stops being reported instead of

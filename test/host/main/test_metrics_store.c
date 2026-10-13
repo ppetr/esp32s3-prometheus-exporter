@@ -229,6 +229,20 @@ void test_metrics_store_cpu_usage_included_when_set(void) {
     TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_cpu_usage_percent{core=\"1\"} 87.0\n"));
 }
 
+void test_metrics_store_chip_temp_omitted_until_set(void) {
+    char buf[512];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
+    TEST_ASSERT_NULL(strstr(buf, "esp32_usb_bridge_chip_temp_celsius"));
+}
+
+void test_metrics_store_chip_temp_included_when_set(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, metrics_store_set_chip_temp(42.3f));
+
+    char buf[512];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
+    TEST_ASSERT_NOT_NULL(strstr(buf, "esp32_usb_bridge_chip_temp_celsius 42.3\n"));
+}
+
 void test_metrics_store_eth_link_up_includes_speed_and_duplex(void) {
     TEST_ASSERT_EQUAL(ESP_OK, metrics_store_set_eth_link(true, 100, true));
 

@@ -339,6 +339,14 @@ to one channel):
 - `esp32_usb_bridge_task_stack_free_bytes{task="..."}` - one line per
   FreeRTOS task, from the same `uxTaskGetSystemState()` snapshot the CPU
   gauge uses (`usStackHighWaterMark`, already in bytes on this port).
+- `esp32_usb_bridge_chip_temp_celsius` - the S3's internal die temperature
+  sensor (`driver/temperature_sensor.h`, installed lazily on first scrape,
+  `TEMPERATURE_SENSOR_CONFIG_DEFAULT(10, 50)` - this range lands on the
+  chip's most accurate calibrated band, -10..80 °C at ±1 °C, same as
+  ESP-IDF's own example). Omitted if install/enable ever fails (no retry
+  after that). The S3 has no other usable built-in sensor: no Hall sensor
+  (removed after the original ESP32), and the touch-sensor peripheral it
+  does have needs an external pad to mean anything.
 
 All of the above (except the Ethernet link gauges, which net_eth pushes on
 its own events) are collected by a new `sys_metrics` component and refreshed
