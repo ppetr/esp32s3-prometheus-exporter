@@ -285,6 +285,14 @@ esp_err_t lua_sandbox_resume(lua_sandbox_t *sandbox, const uint8_t *data, size_t
     return err;
 }
 
+size_t lua_sandbox_memory_used(const lua_sandbox_t *sandbox) {
+    return (sandbox != NULL) ? sandbox->mem.current_used : 0;
+}
+
+size_t lua_sandbox_memory_limit(const lua_sandbox_t *sandbox) {
+    return (sandbox != NULL) ? sandbox->mem.max_limit : 0;
+}
+
 esp_err_t lua_sandbox_test_get_global_number(lua_sandbox_t *sandbox, const char *name, double *out) {
     if (sandbox == NULL || name == NULL || out == NULL) {
         return ESP_ERR_INVALID_ARG;

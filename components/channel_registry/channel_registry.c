@@ -339,6 +339,28 @@ esp_err_t channel_registry_push_data(const char *channel, const uint8_t *data, s
     return err;
 }
 
+esp_err_t channel_registry_get_memory_usage(const char *channel, size_t *out_used_bytes, size_t *out_limit_bytes) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (channel == NULL || out_used_bytes == NULL || out_limit_bytes == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err;
+    channel_entry_t *entry = find_channel_locked(channel);
+    if (entry == NULL) {
+        err = ESP_ERR_NOT_FOUND;
+    } else {
+        *out_used_bytes = lua_sandbox_memory_used(entry->sandbox);
+        *out_limit_bytes = lua_sandbox_memory_limit(entry->sandbox);
+        err = ESP_OK;
+    }
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
 int channel_registry_pick_channel_with_data(char *out_channel, size_t out_channel_len, uint8_t *buf, size_t maxlen) {
     if (!s_initialized || out_channel == NULL || out_channel_len == 0 || buf == NULL) {
         return -1;

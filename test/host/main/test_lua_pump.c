@@ -38,7 +38,7 @@ void test_lua_pump_step_drains_pending_data(void) {
 
     TEST_ASSERT_TRUE(lua_pump_step((uint32_t)xTaskGetTickCount(), LUA_PUMP_INSTRUCTION_LIMIT));
 
-    char metrics_buf[256];
+    char metrics_buf[512];
     TEST_ASSERT_GREATER_THAN(0, metrics_store_format(metrics_buf, sizeof(metrics_buf)));
     TEST_ASSERT_NOT_NULL(strstr(metrics_buf, "usb_bridge_channel_info{channel=\"dev0\",status=\"online\"} 1"));
 
@@ -55,7 +55,7 @@ void test_lua_pump_step_resumes_due_poll_channel(void) {
 
     TEST_ASSERT_TRUE(lua_pump_step((uint32_t)xTaskGetTickCount(), LUA_PUMP_INSTRUCTION_LIMIT));
 
-    char metrics_buf[256];
+    char metrics_buf[512];
     TEST_ASSERT_GREATER_THAN(0, metrics_store_format(metrics_buf, sizeof(metrics_buf)));
     TEST_ASSERT_NOT_NULL(strstr(metrics_buf, "usb_bridge_channel_info{channel=\"dev0\",status=\"online\"} 1"));
 
@@ -71,10 +71,30 @@ void test_lua_pump_step_reports_error_via_metrics_store(void) {
 
     TEST_ASSERT_TRUE(lua_pump_step((uint32_t)xTaskGetTickCount(), LUA_PUMP_INSTRUCTION_LIMIT));
 
-    char metrics_buf[256];
+    char metrics_buf[512];
     TEST_ASSERT_GREATER_THAN(0, metrics_store_format(metrics_buf, sizeof(metrics_buf)));
     TEST_ASSERT_NOT_NULL(strstr(metrics_buf, "lua_error="));
     TEST_ASSERT_NOT_NULL(strstr(metrics_buf, "boom"));
+
+    channel_registry_deinit();
+}
+
+void test_lua_pump_step_reports_lua_memory_usage(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_add_channel("dev0", TYPICAL_MAX_MEMORY));
+
+    char err_buf[128] = {0};
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_load_script("dev0", "room_temp = 21.5", err_buf, sizeof(err_buf)));
+
+    TEST_ASSERT_TRUE(lua_pump_step((uint32_t)xTaskGetTickCount(), LUA_PUMP_INSTRUCTION_LIMIT));
+
+    char metrics_buf[512];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format(metrics_buf, sizeof(metrics_buf)));
+    TEST_ASSERT_NOT_NULL(strstr(metrics_buf, "lua_memory_used_bytes{channel=\"dev0\"}"));
+    char expected_limit[64];
+    snprintf(expected_limit, sizeof(expected_limit), "lua_memory_limit_bytes{channel=\"dev0\"} %d\n",
+             TYPICAL_MAX_MEMORY);
+    TEST_ASSERT_NOT_NULL(strstr(metrics_buf, expected_limit));
 
     channel_registry_deinit();
 }

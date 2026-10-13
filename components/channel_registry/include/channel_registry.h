@@ -105,6 +105,11 @@ esp_err_t channel_registry_push_data(const char *channel, const uint8_t *data, s
 // out_channel/buf are invalid.
 int channel_registry_pick_channel_with_data(char *out_channel, size_t out_channel_len, uint8_t *buf, size_t maxlen);
 
+// Reports the named channel's live Lua memory usage (DESIGN.md §7), a thin
+// passthrough to lua_sandbox_memory_used()/_limit(). Returns
+// ESP_ERR_NOT_FOUND if the channel isn't registered.
+esp_err_t channel_registry_get_memory_usage(const char *channel, size_t *out_used_bytes, size_t *out_limit_bytes);
+
 #ifdef __cplusplus
 }
 #endif

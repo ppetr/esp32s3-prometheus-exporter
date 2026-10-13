@@ -274,3 +274,35 @@ void test_lua_sandbox_memory_cap_enforced(void) {
 
     lua_sandbox_destroy(sandbox);
 }
+
+void test_lua_sandbox_memory_limit_matches_max_memory_bytes(void) {
+    lua_sandbox_t *sandbox = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, lua_sandbox_create("dev0", TYPICAL_MAX_MEMORY, &sandbox));
+
+    TEST_ASSERT_EQUAL(TYPICAL_MAX_MEMORY, lua_sandbox_memory_limit(sandbox));
+
+    lua_sandbox_destroy(sandbox);
+}
+
+// Proves lua_sandbox_memory_used() reflects real allocator activity, not a
+// constant - grows when the script allocates, same accounting
+// l_alloc_restricted() enforces the cap against (DESIGN.md §7).
+void test_lua_sandbox_memory_used_reflects_allocations(void) {
+    lua_sandbox_t *sandbox = NULL;
+    TEST_ASSERT_EQUAL(ESP_OK, lua_sandbox_create("dev0", TYPICAL_MAX_MEMORY, &sandbox));
+    size_t baseline = lua_sandbox_memory_used(sandbox);
+
+    TEST_ASSERT_EQUAL(ESP_OK, lua_sandbox_load(sandbox, "big = string.rep('x', 10000)\ncoroutine.yield()"));
+    char err_buf[128] = {0};
+    uint32_t yield_ms = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, lua_sandbox_resume(sandbox, NULL, 0, 0, &yield_ms, err_buf, sizeof(err_buf)));
+
+    TEST_ASSERT_GREATER_THAN(baseline + 10000, lua_sandbox_memory_used(sandbox));
+
+    lua_sandbox_destroy(sandbox);
+}
+
+void test_lua_sandbox_memory_used_returns_zero_for_null_sandbox(void) {
+    TEST_ASSERT_EQUAL(0, lua_sandbox_memory_used(NULL));
+    TEST_ASSERT_EQUAL(0, lua_sandbox_memory_limit(NULL));
+}

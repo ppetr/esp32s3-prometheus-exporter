@@ -18,6 +18,15 @@ static void report_result(const char *channel, esp_err_t err, const char *err_bu
     } else if (err == ESP_FAIL) {
         metrics_store_set_channel_status(channel, true, err_buf);
     }
+
+    // Lua-side memory usage (DESIGN.md §7), refreshed on every resume
+    // regardless of its outcome - the sandbox still holds whatever it
+    // allocated even after a runtime error.
+    size_t used_bytes, limit_bytes;
+    if (channel_registry_get_memory_usage(channel, &used_bytes, &limit_bytes) == ESP_OK) {
+        metrics_store_set(channel, "lua_memory_used_bytes", (float)used_bytes);
+        metrics_store_set(channel, "lua_memory_limit_bytes", (float)limit_bytes);
+    }
 }
 
 bool lua_pump_step(uint32_t now_ticks, int instruction_limit) {

@@ -47,6 +47,9 @@ extern void test_lua_sandbox_add_counter_accumulates(void);
 extern void test_lua_sandbox_init_and_observe_histogram(void);
 extern void test_lua_sandbox_observe_histogram_without_init_raises_lua_error(void);
 extern void test_lua_sandbox_memory_cap_enforced(void);
+extern void test_lua_sandbox_memory_limit_matches_max_memory_bytes(void);
+extern void test_lua_sandbox_memory_used_reflects_allocations(void);
+extern void test_lua_sandbox_memory_used_returns_zero_for_null_sandbox(void);
 
 extern void test_channel_registry_add_and_remove_basic(void);
 extern void test_channel_registry_add_duplicate_returns_invalid_state(void);
@@ -72,11 +75,14 @@ extern void test_channel_registry_push_data_unknown_channel_returns_not_found(vo
 extern void test_channel_registry_pick_channel_with_data_returns_zero_when_none_pending(void);
 extern void test_channel_registry_push_data_and_pick_channel_with_data(void);
 extern void test_channel_registry_push_data_full_buffer_returns_no_mem(void);
+extern void test_channel_registry_get_memory_usage_unknown_channel_returns_not_found(void);
+extern void test_channel_registry_get_memory_usage_reports_limit(void);
 
 extern void test_lua_pump_step_returns_false_when_nothing_to_do(void);
 extern void test_lua_pump_step_drains_pending_data(void);
 extern void test_lua_pump_step_resumes_due_poll_channel(void);
 extern void test_lua_pump_step_reports_error_via_metrics_store(void);
+extern void test_lua_pump_step_reports_lua_memory_usage(void);
 extern void test_lua_pump_start_stop_lifecycle(void);
 
 // UNITY_END() returns the failure count; exit with it so the Linux-target
@@ -128,6 +134,9 @@ void app_main(void) {
     RUN_TEST(test_lua_sandbox_init_and_observe_histogram);
     RUN_TEST(test_lua_sandbox_observe_histogram_without_init_raises_lua_error);
     RUN_TEST(test_lua_sandbox_memory_cap_enforced);
+    RUN_TEST(test_lua_sandbox_memory_limit_matches_max_memory_bytes);
+    RUN_TEST(test_lua_sandbox_memory_used_reflects_allocations);
+    RUN_TEST(test_lua_sandbox_memory_used_returns_zero_for_null_sandbox);
     RUN_TEST(test_channel_registry_add_and_remove_basic);
     RUN_TEST(test_channel_registry_add_duplicate_returns_invalid_state);
     RUN_TEST(test_channel_registry_add_exceeds_capacity_returns_no_mem);
@@ -152,10 +161,13 @@ void app_main(void) {
     RUN_TEST(test_channel_registry_pick_channel_with_data_returns_zero_when_none_pending);
     RUN_TEST(test_channel_registry_push_data_and_pick_channel_with_data);
     RUN_TEST(test_channel_registry_push_data_full_buffer_returns_no_mem);
+    RUN_TEST(test_channel_registry_get_memory_usage_unknown_channel_returns_not_found);
+    RUN_TEST(test_channel_registry_get_memory_usage_reports_limit);
     RUN_TEST(test_lua_pump_step_returns_false_when_nothing_to_do);
     RUN_TEST(test_lua_pump_step_drains_pending_data);
     RUN_TEST(test_lua_pump_step_resumes_due_poll_channel);
     RUN_TEST(test_lua_pump_step_reports_error_via_metrics_store);
+    RUN_TEST(test_lua_pump_step_reports_lua_memory_usage);
     RUN_TEST(test_lua_pump_start_stop_lifecycle);
     exit(UNITY_END());
 }

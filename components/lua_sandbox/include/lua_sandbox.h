@@ -56,6 +56,13 @@ esp_err_t lua_sandbox_resume(lua_sandbox_t *sandbox, const uint8_t *data, size_t
                               int instruction_limit, uint32_t *yield_ms_out,
                               char *err_buf, size_t err_buf_len);
 
+// Current/maximum bytes tracked by this sandbox's capped allocator
+// (DESIGN.md §7) - the same accounting l_alloc_restricted() enforces
+// max_memory_bytes against, read back for exporting as a Prometheus gauge.
+// Return 0 for a NULL sandbox.
+size_t lua_sandbox_memory_used(const lua_sandbox_t *sandbox);
+size_t lua_sandbox_memory_limit(const lua_sandbox_t *sandbox);
+
 #ifdef __cplusplus
 }
 #endif
