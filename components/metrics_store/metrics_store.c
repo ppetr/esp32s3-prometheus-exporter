@@ -398,7 +398,18 @@ int metrics_store_format_at(char *buf, size_t buf_len, uint32_t now_ticks) {
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
     size_t offset = 0;
-    bool overflow = false;
+    // Process-level, not channel-scoped - no "channel" label (DESIGN.md
+    // §7's diagnostics intent). now_ticks is already ticks since the
+    // scheduler started, i.e. since boot, so no separate epoch is needed.
+    // Float, not integer seconds: the name says "_seconds" (Prometheus
+    // convention: metric name encodes the unit), so sub-second resolution
+    // belongs in the value, not a renamed/rescaled metric. Fixed-point
+    // (not %g): %g would drop to scientific notation - and lose the
+    // fractional part entirely - once uptime exceeds 6 significant
+    // digits (~11.5 days), which defeats the point of millisecond
+    // resolution for exactly the long-running case uptime is for.
+    bool overflow = !append(buf, buf_len, &offset, "esp32_usb_bridge_uptime_seconds %.3f\n",
+                             (double)now_ticks * portTICK_PERIOD_MS / 1000.0);
     for (int i = 0; i < METRICS_STORE_MAX_CHANNELS && !overflow; i++) {
         channel_entry_t *ch = &s_channels[i];
         if (!ch->in_use) {

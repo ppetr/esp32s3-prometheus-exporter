@@ -4,6 +4,7 @@
 
 extern void test_metrics_store_set_before_init_returns_invalid_state(void);
 extern void test_metrics_store_set_null_args_returns_invalid_arg(void);
+extern void test_metrics_store_format_includes_uptime(void);
 extern void test_metrics_store_set_and_format_basic(void);
 extern void test_metrics_store_counter_add_accumulates_and_formats(void);
 extern void test_metrics_store_counter_add_negative_returns_invalid_arg(void);
@@ -74,6 +75,7 @@ void app_main(void) {
     UNITY_BEGIN();
     RUN_TEST(test_metrics_store_set_before_init_returns_invalid_state);
     RUN_TEST(test_metrics_store_set_null_args_returns_invalid_arg);
+    RUN_TEST(test_metrics_store_format_includes_uptime);
     RUN_TEST(test_metrics_store_set_and_format_basic);
     RUN_TEST(test_metrics_store_counter_add_accumulates_and_formats);
     RUN_TEST(test_metrics_store_counter_add_negative_returns_invalid_arg);

@@ -26,6 +26,20 @@ void test_metrics_store_set_null_args_returns_invalid_arg(void) {
     TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG, metrics_store_set("dev0", NULL, 1.0f));
 }
 
+// Process-level diagnostic (DESIGN.md §7): present even with zero channels
+// registered, and independent of the per-channel gauge/counter/histogram
+// machinery exercised by the rest of this file.
+void test_metrics_store_format_includes_uptime(void) {
+    TickType_t now = 123456;
+    char buf[256];
+    TEST_ASSERT_GREATER_THAN(0, metrics_store_format_at(buf, sizeof(buf), now));
+
+    double expected_seconds = (double)now * portTICK_PERIOD_MS / 1000.0;
+    char expected[64];
+    snprintf(expected, sizeof(expected), "esp32_usb_bridge_uptime_seconds %.3f\n", expected_seconds);
+    TEST_ASSERT_NOT_NULL(strstr(buf, expected));
+}
+
 void test_metrics_store_set_and_format_basic(void) {
     TEST_ASSERT_EQUAL(ESP_OK, metrics_store_set("dev0", "temp", 23.5f));
 
@@ -164,7 +178,7 @@ void test_metrics_store_histogram_reinit_resets_counts(void) {
     float new_bounds[] = {5.0f, 15.0f};
     TEST_ASSERT_EQUAL(ESP_OK, metrics_store_histogram_init("dev0", "lat", new_bounds, 2));
 
-    char buf[256];
+    char buf[512];
     TEST_ASSERT_GREATER_THAN(0, metrics_store_format(buf, sizeof(buf)));
     TEST_ASSERT_NOT_NULL(strstr(buf, "lat_bucket{channel=\"dev0\",le=\"5\"} 0\n"));
     TEST_ASSERT_NOT_NULL(strstr(buf, "lat_count{channel=\"dev0\"} 0\n"));
