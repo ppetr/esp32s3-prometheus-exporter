@@ -597,6 +597,37 @@ void setup_safe_lua_env(lua_State *L) {
 `collectgarbage` is removed so GC timing stays under firmware control
 rather than being triggerable (or disable-able) by the script itself.
 
+**Implemented**, `set_metric`/`i2c_read` split into four functions (one
+per `metrics_store` metric kind) with `i2c_read` deferred to
+`i2c_poll_source` work:
+
+```lua
+set_metric(name, value)               -- gauge
+add_counter(name, amount)              -- counter; amount must be >= 0
+init_histogram(name, {bounds...})     -- defines buckets, once before observing
+observe_histogram(name, value)
+```
+
+Each is a C closure registered with the channel name as its *only*
+upvalue (`push_metric_fns()` in `lua_sandbox.c`) - not a Lua global
+variable, not a script argument. A script has no way to name a channel at
+all, so it structurally cannot misattribute a metric to a different
+channel, whether by accident or a deliberately hostile script. This is
+why `lua_sandbox_create()` now takes the channel name as a parameter: the
+sandbox didn't otherwise know which channel it belonged to.
+
+A `metrics_store` failure (bad bucket count, name collision with a
+different metric kind, `observe_histogram` before `init_histogram`, out
+of metric slots) raises a Lua error via `luaL_error()` rather than
+returning a status code the script could ignore - it surfaces through
+the existing `lua_sandbox_resume()` error path exactly like any other
+runtime error, with no new plumbing needed (DESIGN.md §6.3's
+`lua_error` channel-status field).
+
+`i2c_read` is intentionally not implemented yet - no I2C bus is brought
+up anywhere in the firmware yet either, so there's nothing for it to
+read from.
+
 ## 10. Script upload workflow
 
 HTTP endpoint on the Core-0 server, e.g. `POST /scripts/<channel>` with the
@@ -754,6 +785,22 @@ variant). This validates things Tier 1 can't:
 Test driver scripts live in `test/qemu/`: start `idf.py qemu`, feed bytes
 into the fake channel's backing file/socket, and curl the exposed HTTP
 ports to assert on `/metrics` output.
+
+**Deliberately not pursued yet** (`test/qemu/run_qemu_test.sh` is still a
+stub that exits 1): the actual cost turned out larger than it first
+looked, for a test that's really only covering `http_api`'s httpd
+plumbing plus task-priority/boot-sequencing concerns - everything else
+this would exercise is already covered by Tier 1 against the real
+functions directly. Would need, in order: (1) a `channel_source` Kconfig
+switch (name still TBD, §13) plus a small glue task to actually pump
+`channel_source_fake` into `channel_registry` - nothing currently calls
+`channel_source_fake`'s `open`/`read`/`is_connected` from anywhere; (2)
+`net_eth`'s QEMU-netif variant (the OpenCores MAC, not W5500 - a second
+code path through `net_eth_init()`); (3) the QEMU build variant and
+networking setup itself. Revisit if `http_api` grows enough
+request-handling logic that manual curl-against-real-hardware checks
+(current practice, §12.4) stop being enough, or if boot-sequencing bugs
+start actually occurring that Tier 1 can't catch.
 
 ### 12.4 Tier 3 — hardware smoke tests (the board you already have)
 
