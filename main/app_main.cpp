@@ -1,3 +1,4 @@
+#include "esp_err.h"
 #include "esp_log.h"
 
 #include "net_eth.h"
@@ -22,7 +23,9 @@ extern "C" void app_main(void) {
     net_eth_init();
     metrics_store_init();
     channel_registry_init();
-    upload_auth_init();
+    // upload_auth_enabled() stays true even if this fails (it's a
+    // build-time-only check, see upload_auth.c) - must not boot half-init.
+    ESP_ERROR_CHECK(upload_auth_init());
     http_api_start();
     usb_host_bridge_init();
     i2c_poll_source_init();

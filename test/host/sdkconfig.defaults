@@ -1,4 +1,5 @@
 # Non-empty so Tier 1 exercises upload_auth's enabled path (DESIGN.md §10);
 # see test_upload_auth.c for why the disabled/empty-key path isn't also
-# covered here.
-CONFIG_UPLOAD_AUTH_HMAC_KEY="test-secret"
+# covered here. Public half of a throwaway P-256 test key pair - the
+# private half (also test-only) is hardcoded in test_upload_auth.c.
+CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY="0454730460b998537908beb08e11d073efb29be893644cb6040e33e5e2dcf0ba567f521c96ed7c4e7c71fa51f11fec6192cc51fc023f6802e7c56a0fd9dfdbd226"

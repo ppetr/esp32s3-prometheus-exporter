@@ -93,7 +93,7 @@ static esp_err_t persist_script(const char *channel, const char *source, size_t 
 static esp_err_t scripts_nonce_get_handler(httpd_req_t *req) {
     if (!upload_auth_enabled()) {
         httpd_resp_set_status(req, "404 Not Found");
-        return httpd_resp_sendstr(req, "upload authentication is disabled (no CONFIG_UPLOAD_AUTH_HMAC_KEY configured)");
+        return httpd_resp_sendstr(req, "upload authentication is disabled (no CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY configured)");
     }
 
     char nonce_hex[UPLOAD_AUTH_NONCE_HEX_LEN];
@@ -238,7 +238,7 @@ esp_err_t http_api_start(void) {
         .method = HTTP_POST,
         .handler = scripts_post_handler,
     };
-    // Always registered, regardless of CONFIG_UPLOAD_AUTH_HMAC_KEY - with no
+    // Always registered, regardless of CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY - with no
     // key configured, the handler itself reports why rather than leaving
     // the client to puzzle over the wildcard /scripts/* POST handler's
     // generic 405 for a GET request.

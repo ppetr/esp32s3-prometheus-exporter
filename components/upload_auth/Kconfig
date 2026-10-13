@@ -1,14 +1,24 @@
 menu "upload_auth: /scripts upload authentication (DESIGN.md §10)"
 
-    config UPLOAD_AUTH_HMAC_KEY
-        string "Shared HMAC secret for /scripts/* uploads (empty disables auth entirely)"
+    config UPLOAD_AUTH_ECDSA_PUBLIC_KEY
+        string "Hex-encoded P-256 public key for /scripts/* upload signatures (empty disables auth entirely)"
         default ""
         help
             If empty (the default), upload authentication is not wired in
             at all - no nonce endpoint is registered and /scripts/* accepts
             uploads exactly as if this component didn't exist, fine for a
-            trusted-LAN deployment (DESIGN.md §1). Set this to a secret
-            shared with the uploader to require a valid nonce + HMAC-SHA256
-            signature on every script upload.
+            trusted-LAN deployment (DESIGN.md §1). Set this to the
+            uploader's ECDSA P-256 public key to require a valid nonce plus
+            an ECDSA-SHA256 signature on every upload (DESIGN.md §10). The
+            matching private key never has to touch the device - keep it
+            wherever `tools/upload_script.sh` runs.
+
+            130 hex characters: the uncompressed SEC1 point encoding (the
+            byte 0x04 followed by the 32-byte X and 32-byte Y coordinates).
+            For a standard P-256 key pair:
+
+                openssl ecparam -name prime256v1 -genkey -noout -out key.pem
+                openssl ec -in key.pem -pubout -out pub.pem
+                openssl ec -pubin -in pub.pem -outform DER | tail -c 65 | xxd -p -c200
 
 endmenu

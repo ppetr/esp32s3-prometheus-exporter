@@ -711,13 +711,21 @@ until a driver (`usb_host_bridge`/`i2c_poll_source`) actually calls
 **Upload authentication (implemented, optional)**: given the LAN-only
 trust assumption in §1, auth is off by default and `/scripts/*` behaves
 exactly as described above with no auth at all. It's gated entirely by a
-build-time secret, `CONFIG_UPLOAD_AUTH_HMAC_KEY` (Kconfig, default empty)
-— set it and a new `upload_auth` component enforces a Withings-style
-server-issued nonce plus an HMAC-SHA256 signature on every upload. A
-server-issued nonce was chosen over a bare signed timestamp specifically
-to avoid any dependency on §6.4's best-effort SNTP — a device with no NTP
-reachable must still be able to accept signed uploads, and §6.4's whole
-point is that nothing hard-depends on NTP succeeding:
+build-time public key, `CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY` (Kconfig,
+default empty) — set it and a new `upload_auth` component enforces a
+Withings-style server-issued nonce plus an ECDSA-SHA256 (P-256) signature
+on every upload. A server-issued nonce was chosen over a bare signed
+timestamp specifically to avoid any dependency on §6.4's best-effort SNTP
+— a device with no NTP reachable must still be able to accept signed
+uploads, and §6.4's whole point is that nothing hard-depends on NTP
+succeeding.
+
+ECDSA (asymmetric) over HMAC (symmetric): the device only ever holds the
+*public* key, not a shared secret. Anyone extracting firmware/flash from a
+physical device recovers only the ability to verify signatures, not to
+forge them — the private key lives wherever `tools/upload_script.sh` runs
+and never has to touch the device at all. A shared HMAC secret can't offer
+that: holding the device's copy of it is already enough to sign.
 
 1. `GET /scripts/nonce` — always registered; if no key is configured it
    responds `404` with an explanatory message (no key means no nonce)
@@ -726,29 +734,41 @@ point is that nothing hard-depends on NTP succeeding:
    key configured, it returns a fresh single-use nonce (16 random bytes
    from `esp_fill_random()`, hex-encoded), held server-side in a small
    fixed-size table with a few minutes' validity tracked against the
-   FreeRTOS tick count, not wall time.
-2. The uploader signs `HMAC-SHA256(key, "<channel>,<nonce>,<body>")` and
-   sends it as `X-Signature`, the nonce as `X-Nonce`, alongside the usual
-   `POST /scripts/<channel>` body. Binding the channel name into the
-   signed string stops a nonce fetched for one channel being replayed
-   against a different one.
-3. The server re-derives the same HMAC, compares it in constant time, and
-   checks the nonce is known, unexpired, and unused — consuming it
-   (single-use) on this check alone, regardless of what happens next, so
-   the same signed request can never be replayed even if something later
-   in the pipeline fails. A missing, malformed, expired, or already-used
-   nonce/signature is rejected `401` before any script validation runs.
+   FreeRTOS tick count, not wall time. `/scripts/nonce` is necessarily
+   unauthenticated (nothing to check a signature against yet), so the table
+   is also a known, accepted DoS surface: anyone on the LAN issuing nonces
+   faster than a legitimate uploader can evict its pending one first -
+   not defended against, since uploads are rare manual actions at this
+   project's scale.
+2. The uploader signs SHA-256("<channel>,<nonce>,<body>") with its P-256
+   private key — in practice, plain `openssl dgst -sha256 -sign
+   key.pem` over the assembled message, no custom tooling — and sends the
+   resulting DER-encoded signature as `X-Signature` (hex), the nonce as
+   `X-Nonce`, alongside the usual `POST /scripts/<channel>` body. Binding
+   the channel name into the signed string stops a nonce fetched for one
+   channel being replayed against a different one.
+3. The server converts the DER signature to PSA's fixed-width raw `r||s`
+   form (`mbedtls_ecdsa_der_to_raw()` — DER is what every standard tool
+   produces, PSA only accepts raw), then verifies it against the
+   configured public key, and checks the nonce is known, unexpired, and
+   unused — consuming it (single-use) on this check alone, regardless of
+   what happens next, so the same signed request can never be replayed
+   even if something later in the pipeline fails. A missing, malformed,
+   expired, or already-used nonce/signature is rejected `401` before any
+   script validation runs.
 
 See `tools/upload_script.sh` for a reference curl+openssl client
-implementing this flow (and the plain unauthenticated upload otherwise).
+implementing this flow (and the plain unauthenticated upload otherwise),
+and `CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY`'s Kconfig help for how to
+generate a key pair and extract the public key's hex encoding.
 
 `upload_auth` has no dependency on `esp_http_server` (only `mbedtls` for
-HMAC-SHA256 and `esp_hw_support` for `esp_fill_random()`), so its nonce
+ECDSA/SHA-256 and `esp_hw_support` for `esp_fill_random()`), so its nonce
 table and signature logic are fully covered by Tier 1 host tests
-(`test_upload_auth.c`, built against a test secret pinned in
-`test/host/sdkconfig.defaults`) — `http_api`'s own header
-plumbing/wiring is exercised on real hardware only, same carve-out as the
-rest of §12.2's `http_api` logic.
+(`test_upload_auth.c`, built against a test key pair pinned in
+`test/host/sdkconfig.defaults`/the test file itself) — `http_api`'s own
+header plumbing/wiring is exercised on real hardware only, same carve-out
+as the rest of §12.2's `http_api` logic.
 
 LittleFS over SPIFFS: chosen for power-loss resilience (atomic writes)
 and better performance; reserve a partition in `partitions.csv`:
@@ -766,8 +786,8 @@ though the filesystem mounted there is LittleFS).
 | Endpoint | Method | Behavior |
 |---|---|---|
 | `/metrics` | GET | Reads the current snapshot only (§6.2); never blocks on I/O or Lua. |
-| `/scripts/<channel>` | POST | Validates, stores, atomically swaps a channel's Lua script (§10). If `CONFIG_UPLOAD_AUTH_HMAC_KEY` is set, requires `X-Nonce`/`X-Signature` headers (§10). |
-| `/scripts/nonce` | GET | Issues a single-use nonce for the next upload (§10). Always registered; `404` with an explanatory message if `CONFIG_UPLOAD_AUTH_HMAC_KEY` isn't set. |
+| `/scripts/<channel>` | POST | Validates, stores, atomically swaps a channel's Lua script (§10). If `CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY` is set, requires `X-Nonce`/`X-Signature` headers (§10). |
+| `/scripts/nonce` | GET | Issues a single-use nonce for the next upload (§10). Always registered; `404` with an explanatory message if `CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY` isn't set. |
 
 ## 12. Testing strategy
 
@@ -915,9 +935,10 @@ answer, surface them:
   or whether per-channel isolation is needed from day one.
 - ~~Upload endpoint authentication, if the deployment target isn't a fully
   trusted LAN~~ — resolved: a server-issued nonce (`GET /scripts/nonce`)
-  plus an HMAC-SHA256 signature over `"<channel>,<nonce>,<body>"`,
-  gated behind the optional `CONFIG_UPLOAD_AUTH_HMAC_KEY` build-time
-  secret, implemented in the new `upload_auth` component (§10).
+  plus an ECDSA-SHA256 (P-256) signature over `"<channel>,<nonce>,<body>"`,
+  verified against the optional `CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY`
+  build-time public key, implemented in the new `upload_auth` component
+  (§10).
 - ~~Confirm from the actual Waveshare schematic which SPI bus W5500 is
   on~~ — resolved: pins confirmed from the official Waveshare wiki and
   verified against real hardware (§2). Still open: whether the *other*
