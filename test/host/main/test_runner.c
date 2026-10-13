@@ -35,6 +35,11 @@ extern void test_lua_sandbox_stream_parser_yields_and_resumes(void);
 extern void test_lua_sandbox_poll_parser_yield_ms(void);
 extern void test_lua_sandbox_load_replaces_previous_coroutine(void);
 extern void test_lua_sandbox_instruction_hook_fires_on_runaway_script(void);
+extern void test_lua_sandbox_set_metric_reports_gauge(void);
+extern void test_lua_sandbox_set_metric_uses_sandbox_channel(void);
+extern void test_lua_sandbox_add_counter_accumulates(void);
+extern void test_lua_sandbox_init_and_observe_histogram(void);
+extern void test_lua_sandbox_observe_histogram_without_init_raises_lua_error(void);
 extern void test_lua_sandbox_memory_cap_enforced(void);
 
 extern void test_channel_registry_add_and_remove_basic(void);
@@ -105,6 +110,11 @@ void app_main(void) {
     RUN_TEST(test_lua_sandbox_poll_parser_yield_ms);
     RUN_TEST(test_lua_sandbox_load_replaces_previous_coroutine);
     RUN_TEST(test_lua_sandbox_instruction_hook_fires_on_runaway_script);
+    RUN_TEST(test_lua_sandbox_set_metric_reports_gauge);
+    RUN_TEST(test_lua_sandbox_set_metric_uses_sandbox_channel);
+    RUN_TEST(test_lua_sandbox_add_counter_accumulates);
+    RUN_TEST(test_lua_sandbox_init_and_observe_histogram);
+    RUN_TEST(test_lua_sandbox_observe_histogram_without_init_raises_lua_error);
     RUN_TEST(test_lua_sandbox_memory_cap_enforced);
     RUN_TEST(test_channel_registry_add_and_remove_basic);
     RUN_TEST(test_channel_registry_add_duplicate_returns_invalid_state);

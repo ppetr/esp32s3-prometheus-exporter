@@ -111,7 +111,7 @@ esp_err_t channel_registry_add_channel(const char *channel, size_t max_memory_by
             err = ESP_ERR_NO_MEM;
         } else {
             lua_sandbox_t *sandbox = NULL;
-            err = lua_sandbox_create(max_memory_bytes, &sandbox);
+            err = lua_sandbox_create(channel, max_memory_bytes, &sandbox);
             if (err == ESP_OK) {
                 snprintf(free_slot->name, sizeof(free_slot->name), "%s", channel);
                 free_slot->sandbox = sandbox;

@@ -7,6 +7,7 @@
 #include "lauxlib.h"
 #include "lua.h"
 #include "lualib.h"
+#include "metrics_store.h"
 
 // Allocator state threaded through every allocation this sandbox's Lua
 // state makes, including its own bootstrap (opening libraries) - so
@@ -43,12 +44,91 @@ static void *l_alloc_restricted(void *ud, void *ptr, size_t osize, size_t nsize)
     return new_ptr;
 }
 
+// Metric-reporting functions exposed to scripts (DESIGN.md §6, §9.2). The
+// channel is an upvalue baked in at registration time (push_metric_fns()),
+// not a script argument - a script has no way to report a metric under any
+// channel but its own.
+
+static int l_set_metric(lua_State *L) {
+    const char *channel = lua_tostring(L, lua_upvalueindex(1));
+    const char *name = luaL_checkstring(L, 1);
+    lua_Number value = luaL_checknumber(L, 2);
+    if (metrics_store_set(channel, name, (float)value) != ESP_OK) {
+        return luaL_error(L, "set_metric('%s'): failed (bad kind, or out of metric slots)", name);
+    }
+    return 0;
+}
+
+static int l_add_counter(lua_State *L) {
+    const char *channel = lua_tostring(L, lua_upvalueindex(1));
+    const char *name = luaL_checkstring(L, 1);
+    lua_Number amount = luaL_checknumber(L, 2);
+    if (metrics_store_counter_add(channel, name, (double)amount) != ESP_OK) {
+        return luaL_error(L, "add_counter('%s'): failed (negative amount, bad kind, or out of slots)", name);
+    }
+    return 0;
+}
+
+// init_histogram(name, {bucket upper bounds, strictly ascending}). Must be
+// called once before observe_histogram() for a given name (metrics_store's
+// own requirement) - redefines (and resets) an existing histogram's buckets.
+static int l_init_histogram(lua_State *L) {
+    const char *channel = lua_tostring(L, lua_upvalueindex(1));
+    const char *name = luaL_checkstring(L, 1);
+    luaL_checktype(L, 2, LUA_TTABLE);
+
+    lua_Integer bucket_count = luaL_len(L, 2);
+    if (bucket_count <= 0 || bucket_count > METRICS_STORE_MAX_HISTOGRAM_BUCKETS) {
+        return luaL_error(L, "init_histogram('%s'): bucket count %d out of range", name, (int)bucket_count);
+    }
+
+    float bounds[METRICS_STORE_MAX_HISTOGRAM_BUCKETS];
+    for (lua_Integer i = 0; i < bucket_count; i++) {
+        lua_geti(L, 2, i + 1);
+        bounds[i] = (float)luaL_checknumber(L, -1);
+        lua_pop(L, 1);
+    }
+
+    if (metrics_store_histogram_init(channel, name, bounds, (size_t)bucket_count) != ESP_OK) {
+        return luaL_error(L, "init_histogram('%s'): failed (bad bucket ordering, or names a non-histogram metric)",
+                           name);
+    }
+    return 0;
+}
+
+static int l_observe_histogram(lua_State *L) {
+    const char *channel = lua_tostring(L, lua_upvalueindex(1));
+    const char *name = luaL_checkstring(L, 1);
+    lua_Number value = luaL_checknumber(L, 2);
+    if (metrics_store_histogram_observe(channel, name, (float)value) != ESP_OK) {
+        return luaL_error(L, "observe_histogram('%s'): failed (not initialized with init_histogram() yet)", name);
+    }
+    return 0;
+}
+
+static void push_metric_fns(lua_State *L, const char *channel) {
+    static const struct {
+        const char *name;
+        lua_CFunction fn;
+    } kFns[] = {
+        {"set_metric", l_set_metric},
+        {"add_counter", l_add_counter},
+        {"init_histogram", l_init_histogram},
+        {"observe_histogram", l_observe_histogram},
+    };
+    for (size_t i = 0; i < sizeof(kFns) / sizeof(kFns[0]); i++) {
+        lua_pushstring(L, channel);
+        lua_pushcclosure(L, kFns[i].fn, 1);
+        lua_setglobal(L, kFns[i].name);
+    }
+}
+
 // Restricted library set (DESIGN.md §9.2): base, table, string, math, and
 // coroutine - coroutines are pure language-level control flow with no
 // OS/IO surface, and are required for the yield-driven parsers in §9.1 to
 // work at all. Explicitly excluded: os, io, debug, package (and therefore
 // require()).
-static void setup_safe_lua_env(lua_State *L) {
+static void setup_safe_lua_env(lua_State *L, const char *channel) {
     int load_mask = LUA_GLIBK | LUA_TABLIBK | LUA_STRLIBK | LUA_MATHLIBK | LUA_COLIBK;
     luaL_openselectedlibs(L, load_mask, 0);
 
@@ -64,10 +144,12 @@ static void setup_safe_lua_env(lua_State *L) {
     lua_setglobal(L, "print");
     lua_pushnil(L);
     lua_setglobal(L, "collectgarbage");
+
+    push_metric_fns(L, channel);
 }
 
-esp_err_t lua_sandbox_create(size_t max_memory_bytes, lua_sandbox_t **out_sandbox) {
-    if (out_sandbox == NULL || max_memory_bytes == 0) {
+esp_err_t lua_sandbox_create(const char *channel, size_t max_memory_bytes, lua_sandbox_t **out_sandbox) {
+    if (channel == NULL || out_sandbox == NULL || max_memory_bytes == 0) {
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -84,7 +166,7 @@ esp_err_t lua_sandbox_create(size_t max_memory_bytes, lua_sandbox_t **out_sandbo
         free(sandbox);
         return ESP_ERR_NO_MEM;
     }
-    setup_safe_lua_env(sandbox->L);
+    setup_safe_lua_env(sandbox->L, channel);
 
     *out_sandbox = sandbox;
     return ESP_OK;

@@ -12,9 +12,13 @@ extern "C" {
 typedef struct lua_sandbox lua_sandbox_t;
 
 // Creates a sandboxed Lua state: capped allocator, restricted library set,
-// dangerous globals removed (DESIGN.md §9.2). max_memory_bytes bounds total
-// allocator usage for this state.
-esp_err_t lua_sandbox_create(size_t max_memory_bytes, lua_sandbox_t **out_sandbox);
+// dangerous globals removed, metric-reporting functions added (DESIGN.md
+// §9.2). max_memory_bytes bounds total allocator usage for this state.
+// channel is copied into the Lua state as the implicit first argument to
+// every metric-reporting call (set_metric/add_counter/init_histogram/
+// observe_histogram, DESIGN.md §6) - the script itself never names its own
+// channel, so it can't misattribute a metric to a different one.
+esp_err_t lua_sandbox_create(const char *channel, size_t max_memory_bytes, lua_sandbox_t **out_sandbox);
 void lua_sandbox_destroy(lua_sandbox_t *sandbox);
 
 // Compiles source without running it; used for upload-time validation

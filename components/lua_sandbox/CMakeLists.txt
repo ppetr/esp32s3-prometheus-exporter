@@ -1,7 +1,7 @@
 idf_component_register(
     SRCS "lua_sandbox.c"
     INCLUDE_DIRS "include" "."
-    PRIV_REQUIRES lua
+    PRIV_REQUIRES lua metrics_store
 )
 
 # espressif/lua's own CMakeLists sets LUA_32BITS=1 PRIVATE, so lua_Number/
