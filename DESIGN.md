@@ -614,6 +614,20 @@ raw Lua source as the body:
    mid-write.
 4. The other channels' coroutines are unaffected by one channel's reload.
 
+**Implemented**, with one deliberate reordering from the steps above:
+`channel_registry_load_script()` already does dry-run-then-live-swap as
+one atomic in-memory operation (§9.1's existing, separately-tested logic),
+so `http_api`'s handler calls that first and only persists to LittleFS
+(write `_new`, then rename over the active file) on success - an
+unvalidated script is thus never written to flash at all. Persistence is
+best-effort: a flash write failure after a successful live swap is logged
+and still returns 200, since the upload's live effect genuinely succeeded;
+only durability across a reboot is lost. Verified end-to-end on real
+hardware (upload, syntax-error rejection, unknown-channel 404). **Not yet
+wired**: reloading persisted scripts into channels at boot - there's
+nothing to reload into until a driver (`usb_host_bridge`/
+`i2c_poll_source`) actually calls `channel_registry_add_channel()`.
+
 **Not yet decided / explicitly flagged as open**: the conversation never
 addressed upload authentication. Given the LAN-only trust assumption in
 §1, this is fine for a single-tenant deployment on a trusted network, but
@@ -768,7 +782,13 @@ answer, surface them:
   recommended, §9.1) is acceptable once there's a real script misbehaving,
   or whether per-channel isolation is needed from day one.
 - Upload endpoint authentication, if the deployment target isn't a fully
-  trusted LAN (§10).
+  trusted LAN (§10). If/when needed, a shared-secret HMAC over the request
+  body (or a plain bearer token) is a better fit for this project's scale
+  than full RFC 9421 HTTP Message Signatures - that spec's canonicalization
+  and multi-algorithm negotiation solve interop between mutually
+  untrusting parties, which doesn't apply to a single trusted uploader.
+  Not implemented; `scripts_post_handler()` in `http_api.c` would need one
+  early check added.
 - ~~Confirm from the actual Waveshare schematic which SPI bus W5500 is
   on~~ — resolved: pins confirmed from the official Waveshare wiki and
   verified against real hardware (§2). Still open: whether the *other*
