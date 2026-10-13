@@ -190,6 +190,26 @@ esp_err_t channel_registry_load_script(const char *channel, const char *source, 
     return err;
 }
 
+esp_err_t channel_registry_validate_script(const char *channel, const char *source, char *err_buf,
+                                            size_t err_buf_len) {
+    if (!s_initialized) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (channel == NULL || source == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    esp_err_t err = lua_sandbox_check_syntax(source, err_buf, err_buf_len);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    err = (find_channel_locked(channel) == NULL) ? ESP_ERR_NOT_FOUND : ESP_OK;
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
 esp_err_t channel_registry_resume(const char *channel, const uint8_t *data, size_t len,
                                    int instruction_limit, uint32_t *yield_ms_out, char *err_buf,
                                    size_t err_buf_len) {

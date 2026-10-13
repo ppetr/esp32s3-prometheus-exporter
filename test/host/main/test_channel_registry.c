@@ -60,6 +60,46 @@ void test_channel_registry_load_script_unknown_channel_returns_not_found(void) {
     channel_registry_deinit();
 }
 
+void test_channel_registry_validate_script_unknown_channel_returns_not_found(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
+    char err_buf[128] = {0};
+    TEST_ASSERT_EQUAL(ESP_ERR_NOT_FOUND,
+                       channel_registry_validate_script("nope", "return 1", err_buf, sizeof(err_buf)));
+    channel_registry_deinit();
+}
+
+void test_channel_registry_validate_script_syntax_error_returns_invalid_arg(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_add_channel("dev0", TYPICAL_MAX_MEMORY));
+
+    char err_buf[128] = {0};
+    TEST_ASSERT_EQUAL(ESP_ERR_INVALID_ARG,
+                       channel_registry_validate_script("dev0", "if x then", err_buf, sizeof(err_buf)));
+    TEST_ASSERT_GREATER_THAN(0, strlen(err_buf));
+
+    channel_registry_deinit();
+}
+
+// The whole point of validate vs. load: this must have zero live effect.
+// Proven here by checking the channel still yields its originally loaded
+// script's delay (111) rather than the merely-validated one's (222).
+void test_channel_registry_validate_script_does_not_swap_live_script(void) {
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_add_channel("dev0", TYPICAL_MAX_MEMORY));
+
+    char err_buf[128] = {0};
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_load_script("dev0", "while true do coroutine.yield(111) end",
+                                                             err_buf, sizeof(err_buf)));
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_validate_script("dev0", "while true do coroutine.yield(222) end",
+                                                                 err_buf, sizeof(err_buf)));
+
+    uint32_t yield_ms = 0;
+    TEST_ASSERT_EQUAL(ESP_OK, channel_registry_resume("dev0", NULL, 0, 10000, &yield_ms, err_buf, sizeof(err_buf)));
+    TEST_ASSERT_EQUAL(111, yield_ms);
+
+    channel_registry_deinit();
+}
+
 void test_channel_registry_resume_unknown_channel_returns_not_found(void) {
     TEST_ASSERT_EQUAL(ESP_OK, channel_registry_init());
     uint32_t yield_ms = 0;

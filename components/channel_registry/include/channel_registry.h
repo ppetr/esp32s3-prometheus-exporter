@@ -43,6 +43,16 @@ esp_err_t channel_registry_remove_channel(const char *channel);
 esp_err_t channel_registry_load_script(const char *channel, const char *source, char *err_buf,
                                         size_t err_buf_len);
 
+// Checks that channel is registered and source compiles, without any live
+// effect - no swap, no state change (DESIGN.md §10 point 1, split out from
+// channel_registry_load_script() so a caller can validate before doing
+// something irreversible, like persisting to flash, that it wants to skip
+// entirely on a validation failure). Same return codes as
+// channel_registry_load_script(): ESP_ERR_NOT_FOUND for an unknown
+// channel, ESP_ERR_INVALID_ARG with err_buf filled on a syntax error.
+esp_err_t channel_registry_validate_script(const char *channel, const char *source, char *err_buf,
+                                            size_t err_buf_len);
+
 // Resumes the named channel's coroutine - a thin, locked passthrough to
 // lua_sandbox_resume() (see lua_sandbox.h for parameter semantics). On a
 // successful resume, also records the tick it ran at (for
