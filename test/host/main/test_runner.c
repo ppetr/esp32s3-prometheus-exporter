@@ -87,6 +87,15 @@ extern void test_lua_pump_step_reports_error_via_metrics_store(void);
 extern void test_lua_pump_step_reports_lua_memory_usage(void);
 extern void test_lua_pump_start_stop_lifecycle(void);
 
+extern void test_upload_auth_enabled_when_key_configured(void);
+extern void test_upload_auth_issue_and_verify_succeeds(void);
+extern void test_upload_auth_verify_rejects_wrong_signature(void);
+extern void test_upload_auth_verify_rejects_unknown_nonce(void);
+extern void test_upload_auth_nonce_is_single_use(void);
+extern void test_upload_auth_verify_rejects_expired_nonce(void);
+extern void test_upload_auth_verify_rejects_nonce_for_different_channel(void);
+extern void test_upload_auth_verify_rejects_malformed_hex(void);
+
 // UNITY_END() returns the failure count; exit with it so the Linux-target
 // binary terminates instead of idling in the FreeRTOS scheduler (DESIGN.md
 // §12.2 relies on this to run as a plain host-native test binary).
@@ -173,5 +182,13 @@ void app_main(void) {
     RUN_TEST(test_lua_pump_step_reports_error_via_metrics_store);
     RUN_TEST(test_lua_pump_step_reports_lua_memory_usage);
     RUN_TEST(test_lua_pump_start_stop_lifecycle);
+    RUN_TEST(test_upload_auth_enabled_when_key_configured);
+    RUN_TEST(test_upload_auth_issue_and_verify_succeeds);
+    RUN_TEST(test_upload_auth_verify_rejects_wrong_signature);
+    RUN_TEST(test_upload_auth_verify_rejects_unknown_nonce);
+    RUN_TEST(test_upload_auth_nonce_is_single_use);
+    RUN_TEST(test_upload_auth_verify_rejects_expired_nonce);
+    RUN_TEST(test_upload_auth_verify_rejects_nonce_for_different_channel);
+    RUN_TEST(test_upload_auth_verify_rejects_malformed_hex);
     exit(UNITY_END());
 }

@@ -11,4 +11,5 @@ idf_component_register(
         metrics_store
         http_api
         net_eth
+        upload_auth
 )

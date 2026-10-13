@@ -1,0 +1,14 @@
+menu "upload_auth: /scripts upload authentication (DESIGN.md §10)"
+
+    config UPLOAD_AUTH_HMAC_KEY
+        string "Shared HMAC secret for /scripts/* uploads (empty disables auth entirely)"
+        default ""
+        help
+            If empty (the default), upload authentication is not wired in
+            at all - no nonce endpoint is registered and /scripts/* accepts
+            uploads exactly as if this component didn't exist, fine for a
+            trusted-LAN deployment (DESIGN.md §1). Set this to a secret
+            shared with the uploader to require a valid nonce + HMAC-SHA256
+            signature on every script upload.
+
+endmenu

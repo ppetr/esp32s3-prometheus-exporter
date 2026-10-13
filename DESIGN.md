@@ -708,12 +708,47 @@ persisted scripts into channels at boot - there's nothing to reload into
 until a driver (`usb_host_bridge`/`i2c_poll_source`) actually calls
 `channel_registry_add_channel()`.
 
-**Not yet decided / explicitly flagged as open**: the conversation never
-addressed upload authentication. Given the LAN-only trust assumption in
-§1, this is fine for a single-tenant deployment on a trusted network, but
-if that assumption changes, `/scripts/*` needs some form of auth before
-being exposed beyond a lab network — raise this with whoever owns the
-deployment environment rather than assuming either way.
+**Upload authentication (implemented, optional)**: given the LAN-only
+trust assumption in §1, auth is off by default and `/scripts/*` behaves
+exactly as described above with no auth at all. It's gated entirely by a
+build-time secret, `CONFIG_UPLOAD_AUTH_HMAC_KEY` (Kconfig, default empty)
+— set it and a new `upload_auth` component enforces a Withings-style
+server-issued nonce plus an HMAC-SHA256 signature on every upload. A
+server-issued nonce was chosen over a bare signed timestamp specifically
+to avoid any dependency on §6.4's best-effort SNTP — a device with no NTP
+reachable must still be able to accept signed uploads, and §6.4's whole
+point is that nothing hard-depends on NTP succeeding:
+
+1. `GET /scripts/nonce` — always registered; if no key is configured it
+   responds `404` with an explanatory message (no key means no nonce)
+   rather than leaving the client to puzzle over the wildcard
+   `/scripts/*` POST handler's generic `405` for a GET request. With a
+   key configured, it returns a fresh single-use nonce (16 random bytes
+   from `esp_fill_random()`, hex-encoded), held server-side in a small
+   fixed-size table with a few minutes' validity tracked against the
+   FreeRTOS tick count, not wall time.
+2. The uploader signs `HMAC-SHA256(key, "<channel>,<nonce>,<body>")` and
+   sends it as `X-Signature`, the nonce as `X-Nonce`, alongside the usual
+   `POST /scripts/<channel>` body. Binding the channel name into the
+   signed string stops a nonce fetched for one channel being replayed
+   against a different one.
+3. The server re-derives the same HMAC, compares it in constant time, and
+   checks the nonce is known, unexpired, and unused — consuming it
+   (single-use) on this check alone, regardless of what happens next, so
+   the same signed request can never be replayed even if something later
+   in the pipeline fails. A missing, malformed, expired, or already-used
+   nonce/signature is rejected `401` before any script validation runs.
+
+See `tools/upload_script.sh` for a reference curl+openssl client
+implementing this flow (and the plain unauthenticated upload otherwise).
+
+`upload_auth` has no dependency on `esp_http_server` (only `mbedtls` for
+HMAC-SHA256 and `esp_hw_support` for `esp_fill_random()`), so its nonce
+table and signature logic are fully covered by Tier 1 host tests
+(`test_upload_auth.c`, built against a test secret pinned in
+`test/host/sdkconfig.defaults`) — `http_api`'s own header
+plumbing/wiring is exercised on real hardware only, same carve-out as the
+rest of §12.2's `http_api` logic.
 
 LittleFS over SPIFFS: chosen for power-loss resilience (atomic writes)
 and better performance; reserve a partition in `partitions.csv`:
@@ -731,7 +766,8 @@ though the filesystem mounted there is LittleFS).
 | Endpoint | Method | Behavior |
 |---|---|---|
 | `/metrics` | GET | Reads the current snapshot only (§6.2); never blocks on I/O or Lua. |
-| `/scripts/<channel>` | POST | Validates, stores, atomically swaps a channel's Lua script (§10). |
+| `/scripts/<channel>` | POST | Validates, stores, atomically swaps a channel's Lua script (§10). If `CONFIG_UPLOAD_AUTH_HMAC_KEY` is set, requires `X-Nonce`/`X-Signature` headers (§10). |
+| `/scripts/nonce` | GET | Issues a single-use nonce for the next upload (§10). Always registered; `404` with an explanatory message if `CONFIG_UPLOAD_AUTH_HMAC_KEY` isn't set. |
 
 ## 12. Testing strategy
 
@@ -877,14 +913,11 @@ answer, surface them:
 - Whether multiple channels sharing one `lua_State` (as currently
   recommended, §9.1) is acceptable once there's a real script misbehaving,
   or whether per-channel isolation is needed from day one.
-- Upload endpoint authentication, if the deployment target isn't a fully
-  trusted LAN (§10). If/when needed, a shared-secret HMAC over the request
-  body (or a plain bearer token) is a better fit for this project's scale
-  than full RFC 9421 HTTP Message Signatures - that spec's canonicalization
-  and multi-algorithm negotiation solve interop between mutually
-  untrusting parties, which doesn't apply to a single trusted uploader.
-  Not implemented; `scripts_post_handler()` in `http_api.c` would need one
-  early check added.
+- ~~Upload endpoint authentication, if the deployment target isn't a fully
+  trusted LAN~~ — resolved: a server-issued nonce (`GET /scripts/nonce`)
+  plus an HMAC-SHA256 signature over `"<channel>,<nonce>,<body>"`,
+  gated behind the optional `CONFIG_UPLOAD_AUTH_HMAC_KEY` build-time
+  secret, implemented in the new `upload_auth` component (§10).
 - ~~Confirm from the actual Waveshare schematic which SPI bus W5500 is
   on~~ — resolved: pins confirmed from the official Waveshare wiki and
   verified against real hardware (§2). Still open: whether the *other*

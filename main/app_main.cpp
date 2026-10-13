@@ -5,6 +5,7 @@
 #include "channel_registry.h"
 #include "lua_pump.h"
 #include "http_api.h"
+#include "upload_auth.h"
 #include "usb_host_bridge.h"
 #include "i2c_poll_source.h"
 
@@ -21,6 +22,7 @@ extern "C" void app_main(void) {
     net_eth_init();
     metrics_store_init();
     channel_registry_init();
+    upload_auth_init();
     http_api_start();
     usb_host_bridge_init();
     i2c_poll_source_init();

@@ -9,8 +9,11 @@
 #include "esp_http_server.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "metrics_store.h"
 #include "sys_metrics.h"
+#include "upload_auth.h"
 
 static const char *TAG = "http_api";
 
@@ -87,6 +90,21 @@ static esp_err_t persist_script(const char *channel, const char *source, size_t 
     return ESP_OK;
 }
 
+static esp_err_t scripts_nonce_get_handler(httpd_req_t *req) {
+    if (!upload_auth_enabled()) {
+        httpd_resp_set_status(req, "404 Not Found");
+        return httpd_resp_sendstr(req, "upload authentication is disabled (no CONFIG_UPLOAD_AUTH_HMAC_KEY configured)");
+    }
+
+    char nonce_hex[UPLOAD_AUTH_NONCE_HEX_LEN];
+    esp_err_t err = upload_auth_issue_nonce(nonce_hex, xTaskGetTickCount());
+    if (err != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, NULL);
+    }
+    httpd_resp_set_type(req, "text/plain");
+    return httpd_resp_sendstr(req, nonce_hex);
+}
+
 static esp_err_t scripts_post_handler(httpd_req_t *req) {
     static const char kPrefix[] = "/scripts/";
     const char *channel = req->uri + sizeof(kPrefix) - 1;
@@ -94,6 +112,18 @@ static esp_err_t scripts_post_handler(httpd_req_t *req) {
     if (channel_len == 0 || channel_len >= CHANNEL_REGISTRY_MAX_NAME_LEN || strchr(channel, '/') != NULL) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_sendstr(req, "invalid channel name in URI");
+    }
+
+    // Fail fast, before reading the (possibly large) body, if auth is
+    // enabled (DESIGN.md §10) and either header is missing/oversized.
+    char nonce_hex[UPLOAD_AUTH_NONCE_HEX_LEN];
+    char signature_hex[UPLOAD_AUTH_SIGNATURE_HEX_LEN];
+    if (upload_auth_enabled()) {
+        if (httpd_req_get_hdr_value_str(req, "X-Nonce", nonce_hex, sizeof(nonce_hex)) != ESP_OK ||
+            httpd_req_get_hdr_value_str(req, "X-Signature", signature_hex, sizeof(signature_hex)) != ESP_OK) {
+            httpd_resp_set_status(req, "401 Unauthorized");
+            return httpd_resp_sendstr(req, "missing or malformed X-Nonce/X-Signature");
+        }
     }
 
     if (req->content_len == 0 || req->content_len >= HTTP_API_MAX_SCRIPT_BYTES) {
@@ -119,6 +149,14 @@ static esp_err_t scripts_post_handler(httpd_req_t *req) {
         received += (size_t)n;
     }
     body[received] = '\0';
+
+    if (upload_auth_enabled() &&
+        !upload_auth_verify_and_consume(channel, nonce_hex, signature_hex, (const uint8_t *)body, received,
+                                         xTaskGetTickCount())) {
+        free(body);
+        httpd_resp_set_status(req, "401 Unauthorized");
+        return httpd_resp_sendstr(req, "invalid or expired nonce/signature");
+    }
 
     // Validate -> persist -> swap, in that order (DESIGN.md §10): nothing
     // about the channel's live state changes until the script is already
@@ -200,8 +238,18 @@ esp_err_t http_api_start(void) {
         .method = HTTP_POST,
         .handler = scripts_post_handler,
     };
+    // Always registered, regardless of CONFIG_UPLOAD_AUTH_HMAC_KEY - with no
+    // key configured, the handler itself reports why rather than leaving
+    // the client to puzzle over the wildcard /scripts/* POST handler's
+    // generic 405 for a GET request.
+    static const httpd_uri_t nonce_uri = {
+        .uri = "/scripts/nonce",
+        .method = HTTP_GET,
+        .handler = scripts_nonce_get_handler,
+    };
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &metrics_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &scripts_uri));
+    ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &nonce_uri));
 
     return ESP_OK;
 }

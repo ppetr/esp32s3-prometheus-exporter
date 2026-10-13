@@ -1,0 +1,4 @@
+# Non-empty so Tier 1 exercises upload_auth's enabled path (DESIGN.md §10);
+# see test_upload_auth.c for why the disabled/empty-key path isn't also
+# covered here.
+CONFIG_UPLOAD_AUTH_HMAC_KEY="test-secret"
