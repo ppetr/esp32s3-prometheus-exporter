@@ -318,7 +318,42 @@ script re-implement "gauge that I only ever increase":
 
 Expose the PoE 5 V-rail voltage via ADC (if the board breaks it out to a
 divider) as a gauge, e.g. `esp32_poe_5v_rail_volts`. This is cheap to add
-and is the most likely early warning for USB-inrush-induced brownouts.
+and is the most likely early warning for USB-inrush-induced brownouts. **Not
+yet done** - needs the PoE module physically connected first.
+
+**Implemented** (process-wide diagnostics, no `channel` label - same
+unlabeled shape as the uptime gauge in §6.4, since none of these are scoped
+to one channel):
+
+- `esp32_usb_bridge_heap_free_bytes` / `..._heap_total_bytes` and
+  `..._psram_free_bytes` / `..._psram_total_bytes` (internal SRAM vs. octal
+  PSRAM, via `heap_caps_get_free/total_size(MALLOC_CAP_INTERNAL|SPIRAM)`).
+- `esp32_usb_bridge_cpu_usage_percent{core="0"|"1"}` - each core's non-idle
+  fraction since the *previous* scrape (not a since-boot average), derived
+  from `uxTaskGetSystemState()`'s per-task run-time counters
+  (`CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y`). Needs two samples, so it's
+  absent from the very first `/metrics` response after boot.
+- `esp32_usb_bridge_eth_link_up` (0/1), plus `..._eth_link_speed_mbps` and
+  `..._eth_full_duplex` while up - pushed by `net_eth`'s own link event
+  handler (`ETH_CMD_G_SPEED`/`ETH_CMD_G_DUPLEX_MODE`), not polled.
+- `esp32_usb_bridge_task_stack_free_bytes{task="..."}` - one line per
+  FreeRTOS task, from the same `uxTaskGetSystemState()` snapshot the CPU
+  gauge uses (`usStackHighWaterMark`, already in bytes on this port).
+
+All of the above (except the Ethernet link gauges, which net_eth pushes on
+its own events) are collected by a new `sys_metrics` component and refreshed
+once per `/metrics` scrape (`sys_metrics_refresh()`, called from
+`http_api`'s handler right before `metrics_store_format()`) - not polled on
+a timer, since nothing else needs this data between scrapes.
+
+Also **implemented**, per-channel (uses the ordinary `metrics_store_set()`
+gauge path, so it does carry a `channel` label like any script-reported
+metric): `lua_memory_used_bytes` / `lua_memory_limit_bytes`, reporting each
+channel's Lua sandbox allocator usage (`lua_sandbox_memory_used/_limit()`,
+reading the same counter the capped allocator enforces §9.2's memory limit
+against). Refreshed by `lua_pump`'s `report_result()` after every resume,
+so it goes stale (and is omitted, §6.3) for a channel that stops being
+resumed.
 
 ## 8. USB Host read path and flow control
 
