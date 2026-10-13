@@ -614,19 +614,25 @@ raw Lua source as the body:
    mid-write.
 4. The other channels' coroutines are unaffected by one channel's reload.
 
-**Implemented**, with one deliberate reordering from the steps above:
-`channel_registry_load_script()` already does dry-run-then-live-swap as
-one atomic in-memory operation (§9.1's existing, separately-tested logic),
-so `http_api`'s handler calls that first and only persists to LittleFS
-(write `_new`, then rename over the active file) on success - an
-unvalidated script is thus never written to flash at all. Persistence is
-best-effort: a flash write failure after a successful live swap is logged
-and still returns 200, since the upload's live effect genuinely succeeded;
-only durability across a reboot is lost. Verified end-to-end on real
-hardware (upload, syntax-error rejection, unknown-channel 404). **Not yet
-wired**: reloading persisted scripts into channels at boot - there's
-nothing to reload into until a driver (`usb_host_bridge`/
-`i2c_poll_source`) actually calls `channel_registry_add_channel()`.
+**Implemented**, following the literal order above: a new
+`channel_registry_validate_script()` (dry-run compile + channel-exists
+check, zero live effect - split out specifically for this) runs first; on
+success `http_api` persists to LittleFS (write `_new`, then rename over
+the active file); only once that succeeds does it call
+`channel_registry_load_script()` to do the actual live swap. A flash
+write failure is therefore a clean upload failure (500, logged as an
+error) with no live effect at all - the channel keeps running whatever it
+ran before, never something that's only in RAM and would vanish on
+reboot. (Caught in review: an earlier version called the combined
+validate+swap function first and persisted after, meaning a persist
+failure left the channel running a script that looked fine - online,
+metrics flowing - but wouldn't survive a reboot. Reordering so the live
+swap never happens until durability is confirmed avoids needing any
+rollback for that case.) Verified end-to-end on real hardware (upload,
+syntax-error rejection, unknown-channel 404). **Not yet wired**: reloading
+persisted scripts into channels at boot - there's nothing to reload into
+until a driver (`usb_host_bridge`/`i2c_poll_source`) actually calls
+`channel_registry_add_channel()`.
 
 **Not yet decided / explicitly flagged as open**: the conversation never
 addressed upload authentication. Given the LAN-only trust assumption in
