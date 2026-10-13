@@ -1,0 +1,6 @@
+## IDF Component Manager Manifest File
+dependencies:
+  idf:
+    version: '>=5.0'
+  # LittleFS for the uploaded-script storage partition (DESIGN.md §10).
+  joltwallet/littlefs: '~=1.21.0'
