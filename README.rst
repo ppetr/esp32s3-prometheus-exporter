@@ -60,6 +60,24 @@ Non-goals
 - Multi-tenant auth on the scrape endpoint (single-trust-domain LAN
   assumed).
 
+Architecture
+============
+
+Two FreeRTOS tasks, pinned one per core, meet only at a shared,
+mutex-protected metric map; the HTTP server never touches USB, I²C, or Lua
+directly. See `DESIGN.md <DESIGN.md>`_ for the reasoning behind each piece.
+
+.. image:: docs/architecture.svg
+   :alt: Architecture diagram: USB/I2C/Lua on Core 1, networking/HTTP on
+         Core 0, meeting at a shared metrics_store.
+
+Generated from `docs/architecture.dot <docs/architecture.dot>`_ — after
+editing the source, regenerate with:
+
+.. code:: sh
+
+   dot -Tsvg docs/architecture.dot -o docs/architecture.svg
+
 More detail
 ===========
 

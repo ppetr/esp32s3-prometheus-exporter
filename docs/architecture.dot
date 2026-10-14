@@ -1,0 +1,83 @@
+// Architecture overview. Render with e.g.:
+//   dot -Tsvg docs/architecture.dot -o docs/architecture.svg
+digraph architecture {
+    rankdir=TB;
+    newrank=true;
+    fontname="Helvetica";
+    labelloc=t;
+    label="ESP32-S3 Prometheus Exporter — architecture";
+    nodesep=0.4;
+    ranksep=0.85;
+    node [shape=box, style="rounded,filled", fillcolor="#f5f5f5", fontname="Helvetica", fontsize=11];
+    edge [fontname="Helvetica", fontsize=9];
+
+    subgraph cluster_peripherals {
+        label="Peripherals";
+        style=dashed;
+        usb_dev [label="USB CDC-ACM\ndevice(s)"];
+        i2c_dev [label="I2C sensor(s)\n(planned)"];
+    }
+
+    subgraph cluster_lan {
+        label="LAN";
+        style=dashed;
+        prometheus [label="Prometheus\n(scraper)"];
+        uploader [label="tools/upload_script.sh"];
+    }
+
+    { rank=same; usb_dev; i2c_dev; prometheus; uploader; }
+
+    subgraph cluster_core1 {
+        label="Core 1 — USB / I2C / Lua";
+        style=filled;
+        fillcolor="#eef6ff";
+        usb_host_bridge [label="usb_host_bridge\n(USB Host CDC task)"];
+        i2c_poll_source [label="i2c_poll_source\n(planned)"];
+        channel_registry [label="channel_registry\nchannel map + scheduling"];
+        lua_pump [label="lua_pump\n(scheduler task)"];
+        lua_sandbox [label="lua_sandbox\n(one lua_State\nper channel)"];
+    }
+
+    subgraph cluster_core0 {
+        label="Core 0 — Network / HTTP";
+        style=filled;
+        fillcolor="#fff6ea";
+        http_api [label="http_api\n/metrics\n/scripts/*"];
+        net_eth [label="net_eth\n(W5500 + LwIP + SNTP)"];
+        upload_auth [label="upload_auth\n(nonce +\nECDSA verify)"];
+        littlefs [label="LittleFS\nparser_<channel>.lua", shape=folder, fillcolor="#f0f0f0"];
+        sys_metrics [label="sys_metrics\n(heap/CPU/temp/\nstack/link)"];
+    }
+
+    { rank=same; usb_host_bridge; i2c_poll_source; http_api; }
+    { rank=same; channel_registry; lua_pump; net_eth; upload_auth; littlefs; }
+
+    metrics_store [label="metrics_store\n(shared map,\nmutex-protected)", shape=cylinder, fillcolor="#eaffea"];
+
+    // One-way: an async byte stream, matches the "stream-driven parser" shape (DESIGN.md §9.1-A).
+    usb_dev -> usb_host_bridge [label="CDC bytes"];
+    // Two-way: active polling reads a register on a schedule (DESIGN.md §9.1-B), not a passive stream.
+    i2c_dev -> i2c_poll_source [dir=both, style=dashed, label="poll +\nregister read"];
+
+    usb_host_bridge -> channel_registry [label="channel_source\ninterface"];
+    i2c_poll_source -> channel_registry [style=dashed, label="channel_source\ninterface"];
+
+    channel_registry -> lua_pump [dir=both, label="pending data /\ndue schedule"];
+    // Two-way: resume() drives the coroutine, which yields back a delay/control (DESIGN.md §9.1).
+    lua_pump -> lua_sandbox [dir=both, label="resume() /\nyield(delay)"];
+    lua_sandbox -> metrics_store [label="set_metric() /\nadd_counter() / ..."];
+    sys_metrics -> metrics_store [label="refresh()"];
+
+    // Two-way: a scrape is a request/response pair, not a one-shot push.
+    prometheus -> http_api [dir=both, label="GET /metrics /\nmetrics text"];
+    http_api -> metrics_store [label="read snapshot", dir=back];
+    http_api -> net_eth [dir=back, label="LwIP socket"];
+    http_api -> sys_metrics [label="trigger\nrefresh()"];
+
+    // Two-way: the nonce/signature exchange is itself a request/response round trip.
+    uploader -> http_api [dir=both, label="GET nonce / POST script\n← nonce / 200,4xx"];
+    http_api -> upload_auth [label="verify signature"];
+    http_api -> littlefs [label="persist\n(write + rename)"];
+    http_api -> channel_registry [label="load_script()"];
+    littlefs -> channel_registry [style=dashed];
+}
