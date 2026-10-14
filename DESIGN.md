@@ -51,6 +51,11 @@ Key hardware constraints to design around:
   USB-bus-powered client device. Expose the regulator's 5 V-rail voltage on
   an ADC-monitored metric (see §7) as a diagnostic — a sagging rail under
   USB inrush is the most likely field failure mode.
+- **AM2302 (wired DHT22) sensor**, the project's first real `channel_source`
+  driver (§9.1): `OUT` wired to GPIO1 (`CONFIG_DHT22_SOURCE_GPIO`) - not a
+  boot-strapping pin, and free of the W5500's SPI bus. Powered from
+  **3.3V, not 5V** - at 5V its pulled-up `OUT` line would idle above the
+  GPIO's absolute maximum input voltage.
 
 ## 3. Toolchain and project layout
 
@@ -79,8 +84,10 @@ Key hardware constraints to design around:
   ```
   components/
     channel_source/      # the interface itself (header-only) + a fake/file-backed impl used by tests
-    usb_host_bridge/      # real impl: USB Host CDC-ACM task, ring buffer handoff
-    i2c_poll_source/      # real impl: I2C register polling
+    drivers/              # real channel_source implementations, grouped (one per sensor/bus kind)
+      usb_host_bridge/    # USB Host CDC-ACM task, ring buffer handoff
+      i2c_poll_source/    # I2C register polling
+      dht22_source/        # AM2302/DHT22 single-wire bit-banged read (§9.1)
     lua_sandbox/          # lua_State setup, allocator, hooks, safe API — hardware-independent
     channel_registry/     # channel name -> lua_sandbox_t* map + scheduling (§9.1-§9.2) — hardware-independent
     lua_pump/              # the Lua pump task itself (§5, §9.1) — step logic hardware-independent, task creation Tier 2/3
@@ -130,6 +137,7 @@ steals cycles from USB servicing:
 | USB Host CDC task | 1 | high | blocking read on `usb_host_cdc_acm_receive`-style API, pushes raw bytes into a ring buffer, never calls into Lua directly |
 | Lua pump / scheduler task | 1 | medium | drains the ring buffer, resumes the relevant coroutine; also drives time-based coroutines (I2C polling) |
 | (future) I2C/SPI polling | 1 | low/medium | only if implemented as a dedicated task rather than folded into the Lua pump's scheduler loop |
+| DHT22 poll task | 1 | low | bit-bangs the AM2302 single-wire protocol every ~2.5s, pushes the raw 5-byte reading into `channel_registry` like a stream source (§9.1) |
 
 Rationale for splitting the USB read task from the Lua pump: the USB task
 must never block on Lua (a slow parser or GC pause must not risk a NAK
@@ -158,6 +166,12 @@ managed component), DHCP, and best-effort SNTP (§6.4); confirmed on real
 hardware - link up, DHCP lease obtained, host reachable by ping. It runs
 entirely on ESP-IDF's own Ethernet/LwIP tasks (no task of ours to pin). Not
 yet done: a dedicated diagnostics metric exposing link state (§7).
+
+**Implemented**: `dht22_source_init()` registers the `"dht22"` channel and
+starts the DHT22 poll task above (Core 1, pinned). Confirmed against real
+AM2302 hardware - see §9.1 for why it's a stream rather than poll-driven
+parser from Lua's side, and `tools/scripts/dht22.lua` for the counterpart
+script to upload.
 
 ## 6. Metrics storage and the Prometheus exporter
 
@@ -520,6 +534,25 @@ waiting for the next chunk) would get spuriously re-resumed with no data
 on the very next scheduler pass, which a script following §9.1-A's own
 example (no `or ""` fallback past the first line) would error on.
 
+**Implemented** (DHT22/AM2302, the project's first real sensor): rather
+than exposing a `dht22_read()`-style blocking function for a poll-driven
+script to call on its own schedule (§9.1-B's shape, and what the
+illustrative `i2c_read()` above would need), the native driver
+(`dht22_source`) owns the poll schedule itself - a dedicated FreeRTOS task
+bit-bangs the single-wire protocol every ~2.5s (the sensor's own minimum
+sample interval) and pushes the raw 5-byte reading via
+`channel_registry_push_data()`, exactly like a stream source. The uploaded
+script (`tools/scripts/dht22.lua`) is therefore §9.1-A's shape, not B's: it
+buffers until it has 5 bytes, verifies the checksum, and reports two
+metrics - no C-side Lua API addition needed, and the checksum/byte-
+unpacking/sign-handling logic (the part worth testing) lives in Lua,
+covered by Tier 1 (`test_dht22_script.c`) against canned byte strings. The
+actual GPIO bit-banging is hardware-only and only verified on real
+hardware (§12.4) - see `components/drivers/dht22_source/dht22_source.c`
+for why: sub-100us-per-bit timing needs a short interrupts-disabled
+critical section, which doesn't fit this document's unit-testable/
+hardware-only split any more cleanly than that.
+
 `lua_pump` drives this: `lua_pump_step(now_ticks, instruction_limit)`
 drains and resumes every channel with pending data, then resumes one due
 poll channel, then checks for stalled channels - a plain function,
@@ -789,6 +822,91 @@ though the filesystem mounted there is LittleFS).
 | `/scripts/<channel>` | POST | Validates, stores, atomically swaps a channel's Lua script (§10). If `CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY` is set, requires `X-Nonce`/`X-Signature` headers (§10). |
 | `/scripts/nonce` | GET | Issues a single-use nonce for the next upload (§10). Always registered; `404` with an explanatory message if `CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY` isn't set. |
 
+### 11.1 Self-documentation endpoint for humans and agents
+
+**Not yet implemented** — this whole subsection is a design decision from
+discussion, not code. The goal: once hardware is debugged and Lua callbacks
+(§9) are established, nothing beyond the device itself should be needed to
+operate it — the manual lives on the device, so it's always in sync with the
+firmware actually running.
+
+Three flat routes, deliberately *not* under `.well-known/` (see rejected
+standards below):
+
+| Endpoint | Behavior |
+|---|---|
+| `GET /` | Pre-rendered HTML version of the manual, for a human opening the device's IP in a browser. |
+| `GET /manual.md` | The same manual, raw Markdown — for agents/tools that would rather parse plain text than strip HTML. This is the stable URL other machine-readable docs link to. |
+| `GET /openapi.yaml` | OpenAPI 3.x spec for `/metrics`, `/scripts/*`, etc., with `info.externalDocs.url` pointing at `/manual.md` (`externalDocs` is a real OpenAPI field for linking to supplementary documentation) — the discovery path for an agent that already knows to look for OpenAPI. |
+
+**Rejected**: a `.well-known/ai-discovery.json`-style convention, surfaced by
+an AI web search that turned out to be unreliable on checking. The cited
+"IETF draft" (`draft-aiendpoint-ai-discovery`) is a real document but an
+unadopted *individual* submission with no working-group standing (checked
+directly against the IETF datatracker — it even proposes a different path,
+`/.well-known/ai`, than what the search summary claimed). A second cited
+"standard" (`agent-manifest-spec.org`) solves an unrelated problem — agents
+publishing their own identity/risk profile, not a device publishing its API.
+`.well-known/` itself (RFC 8615) is real, but no established convention
+calls for any of these three files to live there, so doing so would be pure
+cosmetics. Revisit only if a genuinely adopted standard appears later.
+
+**Discovery for an agent that lands on `/` directly**, without ever finding
+`/openapi.yaml`: the rendered HTML carries both a
+`<link rel="alternate" type="text/markdown" href="/manual.md">` in `<head>`
+(the standard HTML mechanism for pointing at an alternate representation,
+same pattern as an RSS `<link>`) *and* a plain visible link in the body —
+because many simple HTML-to-text extraction pipelines (Readability-style
+content extraction, as used by some agent harnesses) drop `<head>` entirely
+and only look at visible body text.
+
+**Build-time, not runtime** is the principle behind every decision below:
+do the work once when building firmware; the device only ever serves static
+bytes.
+
+- **Compression, always decompressed before serving**: the manual and its
+  generated HTML form are stored gzip-compressed on flash (DEFLATE, max
+  level) purely to save flash — then **always** decompressed on-device
+  before being sent, to every client, regardless of what (if anything) it
+  sends as `Accept-Encoding`. Deliberately simplified away from content
+  negotiation (checking `Accept-Encoding: gzip`, passing the blob through
+  raw for capable clients, erroring for others): a few-KB decompression
+  library (`puff.c`/`uzlib`) is cheap enough that running it on every
+  request removes all of that branching/error-case logic for a one-off,
+  negligible CPU cost per request.
+  - A build-time constant, one `original_size` per asset, is generated
+    alongside the compressed blobs — known from the source file at build
+    time, so nothing ever needs decompressing just to learn it. The
+    compressed size needs no separate bookkeeping: it's already available
+    for free from the embedded blob's own linker symbols
+    (`_binary_..._start`/`_end`, as produced by ESP-IDF's `EMBED_FILES`).
+  - That table is what lets the response be both streamed *and* declare
+    `Content-Length` up front: the handler sets
+    `Content-Length: original_size` and decompresses straight into the
+    HTTP response as output is produced, rather than buffering the whole
+    decompressed document in RAM first. No double decompression (one pass
+    to measure, one to send), and no chunked transfer-encoding needed.
+  - Why gzip/DEFLATE and not zstd/brotli: the smallest usable decompressors
+    exist only for gzip (`puff.c`, `uzlib` — a few KB each); zstd/brotli
+    decoders are themselves tens of KB because of their more complex
+    formats (FSE/Huffman tables, context dictionaries), which would defeat
+    the point of a "minimal" decoder.
+  - Rough math worth keeping in mind if the manual grows: for text that
+    compresses to ~35% of its original size, a fixed-cost decompression
+    library pays for itself once the source document passes roughly
+    `library_size / 0.65` bytes — around 8-15 KB for a few-KB decompressor,
+    i.e. almost immediately for documentation of any real size.
+- **HTML rendering**: the manual's HTML form is also generated at build
+  time (e.g. `cmark`/`pandoc` as a host-side CMake step), not with an
+  on-device Markdown library. An on-device renderer was considered and
+  rejected: `md4c` is the smallest CommonMark-compliant option but still
+  tens of KB compiled; a hand-rolled subset parser could be a few KB, but
+  buys nothing over build-time generation, which costs zero flash and zero
+  runtime. A client-side JS renderer (`marked.js`, the lightest common
+  option — measured at ~40 KB minified / ~12 KB gzipped, not assumed) was
+  rejected even harder: it requires a JS engine on the client, defeating the
+  point of this endpoint for agents that just do a plain HTTP GET.
+
 ## 12. Testing strategy
 
 No Linux-hosted emulator models ESP32-S3 USB Host faithfully (Espressif's
@@ -912,6 +1030,7 @@ Reserved for exactly the things Tiers 1–2 structurally cannot cover:
   by ping. Deferred: a static-IP fallback if DHCP is ever unavailable, and
   verifying reconnect behavior after a cable pull.
 - `i2c_poll_source` against real I2C sensors.
+- AM2302/DHT22 against real hardware (`dht22_source`'s bit-banged read).
 - The GPIO boot-mode strap (§4) with an actual jumper/button.
 - PoE power budget / 5 V-rail ADC reading (§7) under real USB client load.
 
@@ -951,6 +1070,9 @@ answer, surface them:
 - Whether histogram bucket storage (§6.5) should be steered to PSRAM via
   `heap_caps_malloc`/`MALLOC_CAP_SPIRAM` instead of plain `malloc()` —
   revisit if a script ever defines many large histograms at once.
+- Which minimal inflate library (`puff.c` vs. `uzlib`, §11.1) and which
+  host-side tool (`cmark`, `pandoc`, or something else) generates the
+  build-time HTML from the Markdown manual.
 - Summary-style metrics (client-side quantiles) were deliberately skipped:
   Prometheus's own Summary type exposes only the final quantile values, not
   the underlying estimator state, so it can't be aggregated server-side
