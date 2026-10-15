@@ -112,6 +112,10 @@ extern void test_upload_auth_verify_rejects_expired_nonce(void);
 extern void test_upload_auth_verify_rejects_nonce_for_different_channel(void);
 extern void test_upload_auth_verify_rejects_malformed_hex(void);
 
+extern void test_uzlib_inflate_raw_round_trips_known_vector(void);
+extern void test_uzlib_inflate_raw_propagates_sink_error(void);
+extern void test_uzlib_inflate_raw_truncated_input_returns_fail(void);
+
 // UNITY_END() returns the failure count; exit with it so the Linux-target
 // binary terminates instead of idling in the FreeRTOS scheduler (DESIGN.md
 // §12.2 relies on this to run as a plain host-native test binary).
@@ -206,5 +210,8 @@ void app_main(void) {
     RUN_TEST(test_upload_auth_verify_rejects_expired_nonce);
     RUN_TEST(test_upload_auth_verify_rejects_nonce_for_different_channel);
     RUN_TEST(test_upload_auth_verify_rejects_malformed_hex);
+    RUN_TEST(test_uzlib_inflate_raw_round_trips_known_vector);
+    RUN_TEST(test_uzlib_inflate_raw_propagates_sink_error);
+    RUN_TEST(test_uzlib_inflate_raw_truncated_input_returns_fail);
     exit(UNITY_END());
 }

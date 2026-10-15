@@ -17,22 +17,16 @@ cmake_minimum_required(VERSION 3.16)
 # Tier 1 host-native unit tests (DESIGN.md §12.2). Build for the ESP-IDF
 # Linux target: idf.py --preview set-target linux build
 #
-# Only list components with no hardware-only dependencies (no "driver", "usb",
-# "esp_eth", "esp_http_server", ...) here — those can't build for the Linux
-# target. Add to this list as more logic-only pieces get tests (channel_source).
-#
-# http_api is NOT listed: its request-handling logic
-# (http_api_handle_script_upload) is a one-line passthrough to
-# channel_registry_load_script(), already fully exercised by
-# test_channel_registry.c - pulling in the whole http_api component here
-# would also pull in its PRIV_REQUIRES esp_http_server (and transitively
-# lwip), unproven on the Linux target, for no additional test coverage.
+# Only list components with no hardware-only dependencies (no "driver",
+# "usb", "esp_eth", ...) here - those can't build for the Linux target. Add
+# to this list as more logic-only pieces get tests (channel_source).
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/../../components/metrics_store"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/lua_sandbox"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/channel_registry"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/lua_pump"
-    "${CMAKE_CURRENT_LIST_DIR}/../../components/upload_auth")
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/upload_auth"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/uzlib_inflate")
 
 # EXTRA_COMPONENT_DIRS otherwise forces a non-minimal build that expands
 # requirements for every component under $IDF_PATH/components, which hits an
