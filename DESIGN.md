@@ -93,7 +93,12 @@ Key hardware constraints to design around:
     lua_pump/              # the Lua pump task itself (§5, §9.1) — step logic hardware-independent, task creation Tier 2/3
     metrics_store/        # metric map + staleness logic — hardware-independent
     http_api/              # /metrics and /scripts endpoints — hardware-independent except for the httpd dependency
+    self_doc/              # /, /manual.md, /openapi.yaml (§11.1) — build-time render+compress, httpd at runtime
+    uzlib_inflate/         # vendored raw-DEFLATE streaming decoder (§11.1) — hardware-independent
     net_eth/               # W5500 init, SNTP — real hardware only
+  docs/
+    manual.md              # the operator's manual itself (§11.1) — not this document
+    openapi.yaml           # OpenAPI 3.x spec for the HTTP API (§11.1)
   main/
     app_main.cpp          # task creation, core pinning, wiring components together
   test/
@@ -137,7 +142,7 @@ steals cycles from USB servicing:
 | USB Host CDC task | 1 | high | blocking read on `usb_host_cdc_acm_receive`-style API, pushes raw bytes into a ring buffer, never calls into Lua directly |
 | Lua pump / scheduler task | 1 | medium | drains the ring buffer, resumes the relevant coroutine; also drives time-based coroutines (I2C polling) |
 | (future) I2C/SPI polling | 1 | low/medium | only if implemented as a dedicated task rather than folded into the Lua pump's scheduler loop |
-| DHT22 poll task | 1 | low | bit-bangs the AM2302 single-wire protocol every ~2.5s, pushes the raw 5-byte reading into `channel_registry` like a stream source (§9.1) |
+| DHT22 poll task | 1 | low | bit-bangs the AM2302 single-wire protocol every ~2.5s, delivers the raw 5-byte reading via `channel_registry_push_data()`, the same mechanism `usb_read()` uses internally (§9.1) |
 
 Rationale for splitting the USB read task from the Lua pump: the USB task
 must never block on Lua (a slow parser or GC pause must not risk a NAK
@@ -169,9 +174,10 @@ yet done: a dedicated diagnostics metric exposing link state (§7).
 
 **Implemented**: `dht22_source_init()` registers the `"dht22"` channel and
 starts the DHT22 poll task above (Core 1, pinned). Confirmed against real
-AM2302 hardware - see §9.1 for why it's a stream rather than poll-driven
-parser from Lua's side, and `tools/scripts/dht22.lua` for the counterpart
-script to upload.
+AM2302 hardware - see §9.1 for why its own timing means the driver polls
+independently and delivers bytes to the channel rather than the Lua
+script calling a read function on its own schedule, and
+`tools/scripts/dht22.lua` for the counterpart script to upload.
 
 ## 6. Metrics storage and the Prometheus exporter
 
@@ -456,50 +462,93 @@ coroutine" convention for the C side to assume. The examples below keep the
 design discussion shaped the two coroutine *shapes* — translate mentally to
 "the chunk body is the function body".
 
-Two coroutine shapes, both driven from the Lua pump task on Core 1:
+**Revised from the original "two coroutine shapes" sketch, and from an
+even earlier push/pull ("master"/"slave") framing in between**: **a
+channel has no binding to any driver at all.** `channel_registry` knows
+nothing about USB, I2C, or any other peripheral - it manages named,
+independently scheduled coroutines, full stop. Which native functions (if
+any) an uploaded script happens to call - `i2c_read()`, `usb_read()`,
+none of them, several different ones in the same script - is entirely up
+to that script; there is no "this channel is the I2C kind" concept
+anywhere in the architecture to get in the way. That's what directly
+answers the original worry that started this: reading several unrelated
+devices from one script and combining them (e.g. a second sensor used
+only to correct the first one's reading) is just two function calls
+before one `set_metric()` - nothing about the channel itself needs to
+know or care.
 
-**A. Stream-driven parser** (USB CDC data arrives asynchronously):
+Each driver exposes its own named read function (`usb_read()`,
+`i2c_read(addr, len)`, `dht22_read()`, ...), all sharing one contract:
+call it, get bytes back (or `nil`). Whether a *particular* function
+returns immediately or actually suspends the calling coroutine until a
+driver task has an answer is that one function's own business - a
+contract between that native function and Lua that the channel
+architecture is entirely indifferent to. `local data = i2c_read(0x48, 2)`
+and `local data = dht22_read()` read identically in a script even though
+(today, as a plan - see below) the first would be an ordinary synchronous
+C function and the second would suspend and resume via `lua_yieldk`.
+Why they'd differ is a plain question of how long the underlying
+operation takes, nothing more: a microsecond-scale I2C register
+transfer is cheap enough to just do inline; a millisecond-scale,
+timing-critical operation (DHT22's bit-banging) isn't, and has to
+hand off to its own task instead of blocking the shared pump for that
+long.
+
+`i2c_read(addr, len)` needs an address because an I2C transaction always
+targets one specific device on a shared bus - the address is only ever
+known to whoever's issuing that particular request, so it has to be a
+call-time argument. `usb_read()` needs no argument *today* simply because
+there's only one USB device in scope right now; a future
+`usb_read(device_id)` would only start mattering once there's more than
+one to tell apart - not yet decided, since it isn't needed yet.
 
 ```lua
-parser = coroutine.create(function(first_chunk)
-    local buffer = first_chunk or ""
-    while true do
-        local nl = buffer:find("\n")
-        while not nl do
-            local chunk = coroutine.yield()
-            buffer = buffer .. chunk
-            nl = buffer:find("\n")
-        end
-        local line = buffer:sub(1, nl - 1)
-        buffer = buffer:sub(nl + 1)
-        local key, val = line:match("(%w+):([%d%.]+)")
-        if key then set_metric(key, tonumber(val)) end
+local buffer = ""
+while true do
+    local nl = buffer:find("\n")
+    while not nl do
+        buffer = buffer .. usb_read()
+        nl = buffer:find("\n")
     end
-end)
-```
-
-C++ side resumes it every time new USB bytes arrive for that channel:
-
-```c
-lua_pushlstring(L, data, len);
-int status = lua_resume(L, NULL, 1, &nresults);
-```
-
-**B. Poll-driven parser** (I2C or any source the device must be actively
-queried, on a schedule rather than reacting to pushed data):
-
-```lua
-function i2c_poll_loop()
-    while true do
-        local data = i2c_read(0x48, 2)
-        if data then
-            local temp = (data:byte(1) * 256 + data:byte(2)) / 16.0
-            set_metric("room_temp", temp)
-        end
-        coroutine.yield(5000)  -- ms until next run
-    end
+    local line = buffer:sub(1, nl - 1)
+    buffer = buffer:sub(nl + 1)
+    local key, val = line:match("(%w+):([%d%.]+)")
+    if key then set_metric(key, tonumber(val)) end
 end
 ```
+
+`usb_read()` is this design's name for what a script used to write as a
+bare `coroutine.yield()` call directly. Internally it's still exactly
+that same suspend (resumed once `channel_registry_push_data()` delivers
+something for this channel, via the already-implemented/tested path
+described below) - just moved inside a named native function instead of
+written as raw `coroutine.yield()` syntax in the script's own source. A
+script no longer needs to call bare `coroutine.yield()` itself for this -
+that's `usb_read()`'s job now, not the script's, and has nothing
+architecturally to do with USB specifically: any future driver whose read
+needs to suspend-and-resume would use the exact same underlying
+mechanism inside its own function.
+
+**`coroutine.yield()`/`coroutine.yield(ms)` are the opposite of
+driver-specific** - plain, generic cooperative-scheduling primitives, the
+same thing any cooperatively-scheduled system has: hand control to other
+channels for a bit, then come back.
+- `coroutine.yield(ms)`: come back in about `ms` milliseconds, with no
+  data (resumed with an empty argument). For a channel's own timing -
+  e.g. deciding how often to re-check something, or breaking a long
+  computation into chunks so the instruction-count hook (§9.2) never has
+  a reason to fire and other channels still get a turn:
+  `coroutine.yield(0)` (or any small value) comes back at the very next
+  opportunity rather than being parked indefinitely - the right primitive
+  for "yield control without really blocking," as opposed to a bare,
+  argument-less `coroutine.yield()`.
+- `coroutine.yield()` (bare, no value): suspends with no self-declared
+  time budget at all - safe only for a driver function (like `usb_read()`
+  above) that has its own other way of guaranteeing it'll eventually be
+  resumed (there, a future push). A script calling it directly, with
+  nothing else driving its resume, would simply never come back -
+  there's no general-purpose "wait for something, anything, from
+  whatever source" primitive, by design.
 
 C++ scheduler side: each registered poll-coroutine carries a
 `next_run_ticks`. The Lua pump task's main loop is a wait on "ring buffer
@@ -521,37 +570,44 @@ write-real-time/read-with-injectable-now split as `metrics_store`'s
 staleness logic (§6.3).
 
 A freshly loaded channel is always due (gets its first "kick-start"
-resume with no data, needed either way - an I2C-poll script's first run
-has to start somehow, and a stream parser's own first line defaults
-`first_chunk or ""`). After that first resume, only two things make a
-channel due again: new pending data
-(`channel_registry_push_data()`/`channel_registry_pick_channel_with_data()`),
-or the channel itself explicitly yielding a number (a real poll
-schedule). A plain `coroutine.yield()` with no value deliberately does
-*not* reschedule the channel - caught while implementing: without this,
-a stream parser paused mid-message (`local chunk = coroutine.yield()`,
-waiting for the next chunk) would get spuriously re-resumed with no data
-on the very next scheduler pass, which a script following §9.1-A's own
-example (no `or ""` fallback past the first line) would error on.
+resume with no data, needed either way - every channel's script has to
+start somehow, whatever it calls first, or nothing at all yet). After
+that first resume, only two things make a channel due again: new pending
+data (`channel_registry_push_data()`/`channel_registry_pick_channel_with_data()`),
+or the channel itself explicitly yielding a number (a real self-reschedule).
+A plain `coroutine.yield()` with no value deliberately does *not*
+reschedule the channel - caught while implementing: without this, a
+coroutine suspended mid-message (inside what's now `usb_read()`'s own
+internal `coroutine.yield()`) would get spuriously re-resumed with no
+data on the very next scheduler pass, which the buffering logic above
+(no `or ""` fallback past the first line) would error on.
 
-**Implemented** (DHT22/AM2302, the project's first real sensor): rather
-than exposing a `dht22_read()`-style blocking function for a poll-driven
-script to call on its own schedule (§9.1-B's shape, and what the
-illustrative `i2c_read()` above would need), the native driver
-(`dht22_source`) owns the poll schedule itself - a dedicated FreeRTOS task
-bit-bangs the single-wire protocol every ~2.5s (the sensor's own minimum
-sample interval) and pushes the raw 5-byte reading via
-`channel_registry_push_data()`, exactly like a stream source. The uploaded
-script (`tools/scripts/dht22.lua`) is therefore §9.1-A's shape, not B's: it
-buffers until it has 5 bytes, verifies the checksum, and reports two
-metrics - no C-side Lua API addition needed, and the checksum/byte-
+**Implemented** (DHT22/AM2302, the project's first real sensor): its
+bit-banged timing (sub-100us pulses) has to run in a tight
+interrupts-disabled C loop no Lua script's scheduling granularity could
+meet, so the native driver (`dht22_source`) owns its own poll schedule
+entirely independently - a dedicated FreeRTOS task bit-bangs the
+single-wire protocol every ~2.5s (the sensor's own minimum sample
+interval) and delivers the raw 5-byte reading via
+`channel_registry_push_data()`, the same mechanism `usb_read()` relies on.
+**Not yet cleaned up**: the uploaded script (`tools/scripts/dht22.lua`)
+still calls bare `coroutine.yield()` directly instead of through a
+wrapping `dht22_read()` function - it was written before this section's
+naming convention existed, and should be fixed to match (wrap it like
+`usb_read()`) next time it's touched, not kept as some sort of deliberate
+exception - there isn't one anymore. The checksum/byte-
 unpacking/sign-handling logic (the part worth testing) lives in Lua,
 covered by Tier 1 (`test_dht22_script.c`) against canned byte strings. The
 actual GPIO bit-banging is hardware-only and only verified on real
 hardware (§12.4) - see `components/drivers/dht22_source/dht22_source.c`
 for why: sub-100us-per-bit timing needs a short interrupts-disabled
 critical section, which doesn't fit this document's unit-testable/
-hardware-only split any more cleanly than that.
+hardware-only split any more cleanly than that. (DHT22 itself isn't an
+important driver - picked only to exercise the mechanism, and dropping it
+from the project entirely is on the table - but it's a useful reminder
+that not every read is cheap enough to do inline in the shared pump task;
+anything slower or timing-critical needs its own task regardless of what
+its Lua-facing function ends up looking like.)
 
 `lua_pump` drives this: `lua_pump_step(now_ticks, instruction_limit)`
 drains and resumes every channel with pending data, then resumes one due
@@ -649,10 +705,11 @@ would be nothing to recreate.
 `coroutine`; skip `os`, `io`, `debug`, `package` entirely (`package` is
 what provides `require`, so excluding it removes that too); then strip
 dangerous globals that `base` still exposes. `coroutine` is not in the
-original discussion's list below, but has to be: both coroutine shapes in
-§9.1 call `coroutine.yield()` from inside the script, which doesn't exist
-without it — pure language-level control flow, no OS/IO surface, safe to
-include. Lua 5.5's `luaL_openselectedlibs()` (§9.1) replaces the
+original discussion's list below, but has to be: a script's own code and
+every driver read function alike (§9.1) rely on `coroutine.yield()` under
+the hood, which doesn't exist without it — pure language-level control
+flow, no OS/IO surface, safe to include. Lua 5.5's
+`luaL_openselectedlibs()` (§9.1) replaces the
 hand-rolled `luaL_requiref` loop this originally sketched:
 
 ```c
@@ -821,14 +878,17 @@ though the filesystem mounted there is LittleFS).
 | `/metrics` | GET | Reads the current snapshot only (§6.2); never blocks on I/O or Lua. |
 | `/scripts/<channel>` | POST | Validates, stores, atomically swaps a channel's Lua script (§10). If `CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY` is set, requires `X-Nonce`/`X-Signature` headers (§10). |
 | `/scripts/nonce` | GET | Issues a single-use nonce for the next upload (§10). Always registered; `404` with an explanatory message if `CONFIG_UPLOAD_AUTH_ECDSA_PUBLIC_KEY` isn't set. |
+| `/` | GET | Operator's manual, rendered to HTML (§11.1). |
+| `/manual.md` | GET | The same manual, raw Markdown (§11.1). |
+| `/openapi.yaml` | GET | OpenAPI 3.x spec for this table (§11.1). |
 
 ### 11.1 Self-documentation endpoint for humans and agents
 
-**Not yet implemented** — this whole subsection is a design decision from
-discussion, not code. The goal: once hardware is debugged and Lua callbacks
-(§9) are established, nothing beyond the device itself should be needed to
-operate it — the manual lives on the device, so it's always in sync with the
-firmware actually running.
+**Implemented** (`components/self_doc/`, `components/uzlib_inflate/`,
+`docs/manual.md`, `docs/openapi.yaml`). The goal: once hardware is debugged
+and Lua callbacks (§9) are established, nothing beyond the device itself
+should be needed to operate it — the manual lives on the device, so it's
+always in sync with the firmware actually running.
 
 Three flat routes, deliberately *not* under `.well-known/` (see rejected
 standards below):
@@ -838,6 +898,12 @@ standards below):
 | `GET /` | Pre-rendered HTML version of the manual, for a human opening the device's IP in a browser. |
 | `GET /manual.md` | The same manual, raw Markdown — for agents/tools that would rather parse plain text than strip HTML. This is the stable URL other machine-readable docs link to. |
 | `GET /openapi.yaml` | OpenAPI 3.x spec for `/metrics`, `/scripts/*`, etc., with `info.externalDocs.url` pointing at `/manual.md` (`externalDocs` is a real OpenAPI field for linking to supplementary documentation) — the discovery path for an agent that already knows to look for OpenAPI. |
+
+`docs/manual.md` is the manual's only source of truth — it is *not*
+DESIGN.md (this document): DESIGN.md records engineering decisions and
+rationale for whoever implements or maintains the firmware; `docs/manual.md`
+is the end-user/agent-facing operator's manual, the thing actually served
+at `/manual.md` and (rendered) at `/`.
 
 **Rejected**: a `.well-known/ai-discovery.json`-style convention, surfaced by
 an AI web search that turned out to be unreliable on checking. The cited
@@ -865,47 +931,97 @@ do the work once when building firmware; the device only ever serves static
 bytes.
 
 - **Compression, always decompressed before serving**: the manual and its
-  generated HTML form are stored gzip-compressed on flash (DEFLATE, max
-  level) purely to save flash — then **always** decompressed on-device
-  before being sent, to every client, regardless of what (if anything) it
-  sends as `Accept-Encoding`. Deliberately simplified away from content
-  negotiation (checking `Accept-Encoding: gzip`, passing the blob through
-  raw for capable clients, erroring for others): a few-KB decompression
-  library (`puff.c`/`uzlib`) is cheap enough that running it on every
-  request removes all of that branching/error-case logic for a one-off,
-  negligible CPU cost per request.
-  - A build-time constant, one `original_size` per asset, is generated
-    alongside the compressed blobs — known from the source file at build
-    time, so nothing ever needs decompressing just to learn it. The
-    compressed size needs no separate bookkeeping: it's already available
-    for free from the embedded blob's own linker symbols
+  generated HTML form are stored on flash as raw DEFLATE (RFC 1951, max
+  level, *no* gzip/zlib container — nothing on either side ever needs to
+  parse a header) purely to save flash — then **always** decompressed
+  on-device before being sent, to every client, regardless of what (if
+  anything) it sends as `Accept-Encoding`. Deliberately simplified away
+  from content negotiation (checking `Accept-Encoding: gzip`, passing the
+  blob through raw for capable clients, erroring for others): a small
+  decompression library is cheap enough that running it on every request
+  removes all of that branching/error-case logic for a one-off, negligible
+  CPU cost per request.
+  - **`uzlib`, not `puff.c`** (the two candidates from earlier discussion):
+    `puff.c` only exposes a single whole-buffer-in, whole-buffer-out call,
+    with no way to resume mid-stream — incompatible with the "decompresses
+    straight into the HTTP response as output is produced" requirement
+    below. `uzlib`'s `uzlib_uncompress()` is an explicit incremental state
+    machine (bounded output buffer per call, resumable), which is what
+    `components/uzlib_inflate/` wraps. Measured compiled size (esp32s3,
+    `idf.py size-components`): 1.8 KB flash (1.6 KB code, under 0.2 KB
+    data) for just the raw-inflate path (no gzip/zlib header parsing, no
+    checksum, no compressor side) — at the low end of the "a few KB"
+    estimate this section originally worked from.
+  - A build-time constant, one `original_size` per asset
+    (`self_doc_sizes.h`, generated by `components/self_doc/gen_assets.py`),
+    is generated alongside the compressed blobs — known from the source
+    file at build time, so nothing ever needs decompressing just to learn
+    it. The compressed size needs no separate bookkeeping: it's already
+    available for free from the embedded blob's own linker symbols
     (`_binary_..._start`/`_end`, as produced by ESP-IDF's `EMBED_FILES`).
-  - That table is what lets the response be both streamed *and* declare
-    `Content-Length` up front: the handler sets
-    `Content-Length: original_size` and decompresses straight into the
-    HTTP response as output is produced, rather than buffering the whole
-    decompressed document in RAM first. No double decompression (one pass
-    to measure, one to send), and no chunked transfer-encoding needed.
-  - Why gzip/DEFLATE and not zstd/brotli: the smallest usable decompressors
-    exist only for gzip (`puff.c`, `uzlib` — a few KB each); zstd/brotli
-    decoders are themselves tens of KB because of their more complex
-    formats (FSE/Huffman tables, context dictionaries), which would defeat
-    the point of a "minimal" decoder.
-  - Rough math worth keeping in mind if the manual grows: for text that
-    compresses to ~35% of its original size, a fixed-cost decompression
-    library pays for itself once the source document passes roughly
-    `library_size / 0.65` bytes — around 8-15 KB for a few-KB decompressor,
-    i.e. almost immediately for documentation of any real size.
+  - That constant is what lets the response be both streamed *and*
+    declare `Content-Length` up front: the handler builds the header block
+    by hand (`esp_http_server`'s `httpd_resp_send_chunk()` always emits
+    `Transfer-Encoding: chunked` with no way to opt out, so this couldn't
+    use it) with `Content-Length: original_size`, writes it via the
+    low-level `httpd_send()`, then feeds `uzlib_uncompress()`'s output
+    straight to the same socket in small (1 KB) chunks via a 32 KB sliding
+    LZ77 window kept separately from those chunks — never buffering the
+    whole decompressed document in RAM. No double decompression (one pass
+    to measure, one to send), and no chunked transfer-encoding.
+  - Why DEFLATE and not zstd/brotli: the smallest usable decompressors
+    exist only for DEFLATE (`puff.c`, `uzlib` — a few KB each, confirmed
+    above); zstd/brotli decoders are themselves tens of KB because of
+    their more complex formats (FSE/Huffman tables, context dictionaries),
+    which would defeat the point of a "minimal" decoder.
 - **HTML rendering**: the manual's HTML form is also generated at build
-  time (e.g. `cmark`/`pandoc` as a host-side CMake step), not with an
-  on-device Markdown library. An on-device renderer was considered and
-  rejected: `md4c` is the smallest CommonMark-compliant option but still
-  tens of KB compiled; a hand-rolled subset parser could be a few KB, but
-  buys nothing over build-time generation, which costs zero flash and zero
+  time, via the Python `markdown` library (`extensions=["tables",
+  "fenced_code"]` — both used by `docs/manual.md`) wrapped in a small
+  hand-written standalone-page template in `gen_assets.py`, not with an
+  on-device Markdown library. Originally built against `pandoc` (a host
+  binary, found via `find_program` and presumed pre-installed); switched
+  to `markdown` for two reasons: it's a Python package, and `idf.py`
+  already requires - and manages its own venv for - Python, so this
+  avoids a second, separate "install this host tool yourself" step; and
+  it rendered noticeably smaller HTML than pandoc's default standalone
+  template once pandoc's bundled CSS was dropped (21.8 KB → 9.0 KB
+  uncompressed, measured, for the same source document). `cmark` was
+  also considered, for the same reason as `pandoc` - a host binary, not
+  a Python package - and rejected for the same reason.
+  - **No separate "please install X" step**: `markdown` is a build-time-
+    only dependency (rendering happens once per build, on the host;
+    nothing it does or produces beyond the rendered HTML text ever
+    reaches the device) pinned to an exact version and installed
+    automatically into ESP-IDF's own managed Python environment by
+    `components/self_doc/CMakeLists.txt` the first time it's missing
+    (checked via `idf_build_get_property(... PYTHON)` - the same
+    interpreter `idf.py` itself uses, not a fresh `find_package(Python3)`
+    search that could resolve to an unrelated system Python) - the same
+    "first run sets itself up" experience `idf.py`/`export.sh` already
+    give the rest of the toolchain, rather than a separate manual
+    prerequisite nobody would think to document. Confirmed working from
+    a clean ESP-IDF Python environment (no network access at all beyond
+    that one-time install would make this a build error, with a message
+    naming the exact manual install command as a fallback).
+  - The `<link rel="alternate" type="text/markdown" href="/manual.md">`
+    (head) and the visible "Raw Markdown version" link (body) from the
+    discovery paragraph above are injected by `gen_assets.py` directly
+    into the rendered HTML fragment's wrapping template - no separate
+    flags/temp files to keep in sync with a host tool's own version.
+  - An on-device renderer was considered and rejected:
+  `md4c` is the smallest CommonMark-compliant option but still tens of KB
+  compiled; a hand-rolled subset parser could be a few KB, but buys
+  nothing over build-time generation, which costs zero flash and zero
   runtime. A client-side JS renderer (`marked.js`, the lightest common
   option — measured at ~40 KB minified / ~12 KB gzipped, not assumed) was
   rejected even harder: it requires a JS engine on the client, defeating the
   point of this endpoint for agents that just do a plain HTTP GET.
+  - `openapi.yaml` is embedded uncompressed (`EMBED_FILES`, not run
+    through the pipeline above) - at 5 KB raw it's small enough that
+    build-time compression wasn't worth the added complexity; combined
+    on-flash cost of all three assets plus `uzlib_inflate` is ~17 KB
+    (measured: `libself_doc.a` 14.8 KB + `libuzlib_inflate.a` 1.8 KB),
+    against a 16 MB flash budget.
 
 ## 12. Testing strategy
 
@@ -951,8 +1067,9 @@ fake implementation, builds and runs as a plain POSIX binary via ESP-IDF's
 Linux target (`idf.py --preview set-target linux`) using Unity:
 
 - Lua sandbox: allocator memory-cap behavior, instruction-hook firing,
-  stripped-API enforcement, coroutine yield/resume semantics for both the
-  stream-parser and poll-parser shapes (§9).
+  stripped-API enforcement, coroutine yield/resume semantics for both a
+  data-driven resume (the mechanism behind `usb_read()`) and a
+  self-rescheduling `coroutine.yield(ms)` (§9).
 - Scheduler: "earliest due coroutine" selection logic, logical-timeout
   detection for a stalled mid-message coroutine (§9.1).
 - `metrics_store`: staleness-threshold omission logic, the always-present
@@ -973,9 +1090,33 @@ Linux target (`idf.py --preview set-target linux`) using Unity:
 - `http_api_handle_script_upload` is a one-line passthrough to
   `channel_registry_load_script()`, so its logic is covered by
   `channel_registry`'s tests, not a dedicated test of its own —
-  `http_api` itself isn't in the Tier 1 build at all, since it
-  `PRIV_REQUIRES esp_http_server` (and transitively `lwip`), unproven on
-  the Linux target and not worth pulling in for a one-liner.
+  `http_api` itself isn't in the Tier 1 build at all, since pulling in
+  its `PRIV_REQUIRES upload_auth`/`channel_registry`/`littlefs` wiring
+  for a one-liner isn't worth it.
+- `self_doc` (§11.1) **is** Tier 1 tested, despite needing
+  `esp_http_server` (and transitively `lwip`) - contrary to this
+  document's own earlier assumption that those were "unproven on the
+  Linux target": a real `httpd_server` does start and serve real TCP
+  sockets there (confirmed first with a manual smoke test - an ad hoc
+  scratch project, curl against a running instance - before writing an
+  automated one). `test_self_doc_http.c` starts one real server once and
+  does real `GET` requests against all three routes (and one unknown
+  path, for the always-registered 404) over a real client socket in the
+  same process, asserting on status/Content-Type/Content-Length/body
+  contract - not a byte-for-byte diff against `docs/manual.md`, which
+  would make every prose edit break this test for no reason.
+  - **Found while writing it**: on this target, `connect()`/`send()`/
+    `recv()` can all return `-1`/`EINTR` well before the peer actually
+    closed or failed (FreeRTOS's Linux port ticks via a periodic signal,
+    which interrupts blocking syscalls) - a plain retry-the-syscall loop
+    on `EINTR` still hung forever, because busy-retrying a blocking
+    syscall without ever yielding starves `httpd`'s own worker task of
+    a chance to run at all. `vTaskDelay(1)` between retries fixes it -
+    `test_self_doc_http.c`'s `RETRY_ON_EINTR` macro.
+  - `uzlib_inflate` (hardware-independent, no sockets needed) is Tier 1
+    tested too: a known raw-DEFLATE vector round-tripped across its
+    internal chunk-buffer boundary, plus sink-error and truncated-input
+    handling.
 
 This tier is the bulk of the test suite by design — it is where almost all
 of the actually interesting logic in this project lives (§9, §6, §10), and
@@ -1052,6 +1193,18 @@ answer, surface them:
 - Whether multiple channels sharing one `lua_State` (as currently
   recommended, §9.1) is acceptable once there's a real script misbehaving,
   or whether per-channel isolation is needed from day one.
+- Whether to keep `dht22_source` at all (it's there only to exercise the
+  mechanism) - and if so, wrapping its native read in a `dht22_read()`
+  function (via `lua_yieldk`) and updating `tools/scripts/dht22.lua` to
+  call it instead of a bare `coroutine.yield()`, for consistency with
+  `usb_read()`/`i2c_read()` (§9.1).
+- How to address more than one USB device from Lua, if that's ever
+  needed (`usb_read(device_id)` or similar - deferred, since only one
+  device is in scope right now, §9.1).
+- Whether `i2c_read(addr, len)` is implemented as a plain synchronous C
+  function (likely fine - a register transfer is microseconds against
+  the scheduling budget) or also needs `lua_yieldk`, once there's a real
+  I2C driver and bus to measure against instead of assuming (§9.1).
 - ~~Upload endpoint authentication, if the deployment target isn't a fully
   trusted LAN~~ — resolved: a server-issued nonce (`GET /scripts/nonce`)
   plus an ECDSA-SHA256 (P-256) signature over `"<channel>,<nonce>,<body>"`,
@@ -1070,9 +1223,15 @@ answer, surface them:
 - Whether histogram bucket storage (§6.5) should be steered to PSRAM via
   `heap_caps_malloc`/`MALLOC_CAP_SPIRAM` instead of plain `malloc()` —
   revisit if a script ever defines many large histograms at once.
-- Which minimal inflate library (`puff.c` vs. `uzlib`, §11.1) and which
+- ~~Which minimal inflate library (`puff.c` vs. `uzlib`, §11.1) and which
   host-side tool (`cmark`, `pandoc`, or something else) generates the
-  build-time HTML from the Markdown manual.
+  build-time HTML from the Markdown manual~~ — resolved: `uzlib`, because
+  its incremental `uzlib_uncompress()` can resume mid-stream and `puff.c`'s
+  single whole-buffer call can't; the Python `markdown` package (not
+  `cmark`/`pandoc`, both standalone host binaries), because `idf.py`
+  already requires and manages its own Python environment, so a pip
+  package can install itself into it automatically with no separate
+  manual step, while a host binary cannot (§11.1).
 - Summary-style metrics (client-side quantiles) were deliberately skipped:
   Prometheus's own Summary type exposes only the final quantile values, not
   the underlying estimator state, so it can't be aggregated server-side

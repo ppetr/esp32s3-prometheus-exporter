@@ -141,9 +141,9 @@ static void push_metric_fns(lua_State *L, const char *channel) {
 
 // Restricted library set (DESIGN.md §9.2): base, table, string, math, and
 // coroutine - coroutines are pure language-level control flow with no
-// OS/IO surface, and are required for the yield-driven parsers in §9.1 to
-// work at all. Explicitly excluded: os, io, debug, package (and therefore
-// require()).
+// OS/IO surface, and are required for coroutine.yield()-based scripts and
+// driver read functions alike (§9.1) to work at all. Explicitly excluded:
+// os, io, debug, package (and therefore require()).
 static void setup_safe_lua_env(lua_State *L, const char *channel) {
     int load_mask = LUA_GLIBK | LUA_TABLIBK | LUA_STRLIBK | LUA_MATHLIBK | LUA_COLIBK;
     luaL_openselectedlibs(L, load_mask, 0);
