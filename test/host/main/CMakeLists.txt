@@ -14,7 +14,7 @@
 
 idf_component_register(
     SRCS "test_runner.c" "test_metrics_store.c" "test_lua_sandbox.c" "test_channel_registry.c" "test_lua_pump.c"
-         "test_upload_auth.c" "test_uzlib_inflate.c"
+         "test_upload_auth.c" "test_uzlib_inflate.c" "test_self_doc_http.c"
     INCLUDE_DIRS "."
-    REQUIRES metrics_store lua_sandbox channel_registry lua_pump upload_auth uzlib_inflate unity
+    REQUIRES metrics_store lua_sandbox channel_registry lua_pump upload_auth uzlib_inflate self_doc esp_http_server unity
 )

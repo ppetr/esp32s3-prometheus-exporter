@@ -20,13 +20,25 @@ cmake_minimum_required(VERSION 3.16)
 # Only list components with no hardware-only dependencies (no "driver",
 # "usb", "esp_eth", ...) here - those can't build for the Linux target. Add
 # to this list as more logic-only pieces get tests (channel_source).
+#
+# esp_http_server (and transitively lwip) IS usable here, via self_doc -
+# confirmed (not assumed) by a manual smoke test first: on this target
+# lwip's sockets are real host OS sockets, so an httpd_server started here
+# is reachable by a plain TCP client in the same process (test_self_doc_http.c).
+#
+# http_api itself is still NOT listed: its request-handling logic
+# (http_api_handle_script_upload) is a one-line passthrough to
+# channel_registry_load_script(), already fully exercised by
+# test_channel_registry.c, so pulling it in here would add build time for
+# no additional coverage.
 set(EXTRA_COMPONENT_DIRS
     "${CMAKE_CURRENT_LIST_DIR}/../../components/metrics_store"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/lua_sandbox"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/channel_registry"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/lua_pump"
     "${CMAKE_CURRENT_LIST_DIR}/../../components/upload_auth"
-    "${CMAKE_CURRENT_LIST_DIR}/../../components/uzlib_inflate")
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/uzlib_inflate"
+    "${CMAKE_CURRENT_LIST_DIR}/../../components/self_doc")
 
 # EXTRA_COMPONENT_DIRS otherwise forces a non-minimal build that expands
 # requirements for every component under $IDF_PATH/components, which hits an

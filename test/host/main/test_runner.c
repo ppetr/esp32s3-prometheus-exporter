@@ -116,6 +116,11 @@ extern void test_uzlib_inflate_raw_round_trips_known_vector(void);
 extern void test_uzlib_inflate_raw_propagates_sink_error(void);
 extern void test_uzlib_inflate_raw_truncated_input_returns_fail(void);
 
+extern void test_self_doc_manual_md_served_correctly(void);
+extern void test_self_doc_root_served_as_html_with_discovery_links(void);
+extern void test_self_doc_openapi_yaml_served_correctly(void);
+extern void test_self_doc_unknown_path_returns_404(void);
+
 // UNITY_END() returns the failure count; exit with it so the Linux-target
 // binary terminates instead of idling in the FreeRTOS scheduler (DESIGN.md
 // §12.2 relies on this to run as a plain host-native test binary).
@@ -213,5 +218,9 @@ void app_main(void) {
     RUN_TEST(test_uzlib_inflate_raw_round_trips_known_vector);
     RUN_TEST(test_uzlib_inflate_raw_propagates_sink_error);
     RUN_TEST(test_uzlib_inflate_raw_truncated_input_returns_fail);
+    RUN_TEST(test_self_doc_manual_md_served_correctly);
+    RUN_TEST(test_self_doc_root_served_as_html_with_discovery_links);
+    RUN_TEST(test_self_doc_openapi_yaml_served_correctly);
+    RUN_TEST(test_self_doc_unknown_path_returns_404);
     exit(UNITY_END());
 }

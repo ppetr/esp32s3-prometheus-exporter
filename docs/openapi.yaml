@@ -1,0 +1,156 @@
+openapi: 3.0.3
+info:
+  title: ESP32-S3 Telemetry Bridge
+  description: >-
+    USB/I2C-to-Prometheus telemetry bridge with Lua-scripted channel parsers.
+    See the full operator's manual (externalDocs below) for how to write and
+    upload a channel's Lua parser script - this document only describes the
+    HTTP surface.
+  version: "1.0.0"
+  externalDocs:
+    description: Operator's manual (Markdown, served by the device itself)
+    url: /manual.md
+externalDocs:
+  description: Operator's manual (Markdown, served by the device itself)
+  url: /manual.md
+paths:
+  /metrics:
+    get:
+      summary: Current metric snapshot
+      description: >-
+        Prometheus text exposition format. Never blocks on USB/I2C/Lua; reads
+        the last values each channel's script reported. Stale metrics are
+        omitted rather than reported with a stale value.
+      responses:
+        "200":
+          description: Metric snapshot.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: |
+                room_temp{channel="i2c0"} 21.4
+                humidity_percent{channel="dht22"} 47.0
+                usb_bridge_channel_info{channel="dht22",status="ok"} 1
+  /scripts/nonce:
+    get:
+      summary: Issue a one-time upload nonce
+      description: >-
+        Required before a signed POST /scripts/{channel}, only when the
+        device was built with an authorized-uploader public key configured.
+      responses:
+        "200":
+          description: A fresh, single-use hex nonce.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "3f2a9c1b7e4d6081a5c0f3e2b4d7a901"
+        "404":
+          description: >-
+            Upload signing isn't required on this build (no public key
+            configured); the body explains this in plain text.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /scripts/{channel}:
+    post:
+      summary: Upload (replace) a channel's Lua parser script
+      description: >-
+        Validates, then atomically swaps, a channel's live Lua script. A
+        rejected upload never touches the channel's previously running
+        script. See the manual (externalDocs) for the Lua API available to
+        the script and the two coroutine shapes it can take.
+      parameters:
+        - name: channel
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 31
+            pattern: "^[^/]{1,31}$"
+          description: Channel name; 1-31 characters, no "/".
+        - name: X-Nonce
+          in: header
+          required: false
+          schema:
+            type: string
+          description: >-
+            Required only when this build requires signed uploads. A nonce
+            from GET /scripts/nonce.
+        - name: X-Signature
+          in: header
+          required: false
+          schema:
+            type: string
+          description: >-
+            Required only when this build requires signed uploads. Hex
+            encoding of a DER-encoded P-256 ECDSA signature over
+            SHA-256("<channel>,<nonce>,<body>").
+      requestBody:
+        required: true
+        content:
+          text/plain:
+            schema:
+              type: string
+              maxLength: 8192
+            example: |
+              local buffer = ... or ""
+              while true do
+                  buffer = buffer .. coroutine.yield()
+              end
+      responses:
+        "200":
+          description: Script accepted and now live.
+          content:
+            text/plain:
+              schema:
+                type: string
+              example: "OK"
+        "400":
+          description: Bad channel name, or the script failed syntax validation.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          description: Missing or invalid X-Nonce/X-Signature (signed uploads required).
+          content:
+            text/plain:
+              schema:
+                type: string
+        "404":
+          description: Unknown channel.
+          content:
+            text/plain:
+              schema:
+                type: string
+  /:
+    get:
+      summary: Operator's manual, rendered to HTML
+      description: >-
+        Pre-rendered at firmware build time from the same Markdown source as
+        /manual.md. Carries a `<link rel="alternate" type="text/markdown"
+        href="/manual.md">` in its `<head>`, and the same link visibly in the
+        body.
+      responses:
+        "200":
+          description: Manual as HTML.
+          content:
+            text/html:
+              schema:
+                type: string
+  /manual.md:
+    get:
+      summary: Operator's manual, raw Markdown
+      description: >-
+        The stable URL other machine-readable docs (including this spec's
+        externalDocs) link to.
+      responses:
+        "200":
+          description: Manual as Markdown.
+          content:
+            text/markdown:
+              schema:
+                type: string

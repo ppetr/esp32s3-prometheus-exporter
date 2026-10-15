@@ -28,6 +28,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "metrics_store.h"
+#include "self_doc.h"
 #include "sys_metrics.h"
 #include "upload_auth.h"
 
@@ -266,6 +267,7 @@ esp_err_t http_api_start(void) {
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &metrics_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &scripts_uri));
     ESP_ERROR_CHECK(httpd_register_uri_handler(s_server, &nonce_uri));
+    ESP_ERROR_CHECK(self_doc_register(s_server));
 
     return ESP_OK;
 }

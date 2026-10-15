@@ -78,6 +78,25 @@ editing the source, regenerate with:
 
    dot -Tsvg docs/architecture.dot -o docs/architecture.svg
 
+Building
+========
+
+1. Install `ESP-IDF v6.1 <https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/get-started/index.html>`_
+   (follow Espressif's own instructions for your platform - this installs
+   the toolchain and a dedicated Python virtual environment under
+   ``~/.espressif``).
+2. In every new shell, before building: ``. $IDF_PATH/export.sh`` (or
+   wherever you installed it, e.g. ``~/esp/esp-idf/export.sh``). This puts
+   ``idf.py`` on ``PATH``.
+3. Build the firmware from the repo root: ``idf.py build``.
+4. Run the Tier 1 host-native unit tests instead (DESIGN.md §12.2, no
+   hardware or emulator needed): ``cd test/host && idf.py --preview
+   set-target linux build && ./build/test_host.elf``.
+
+No other manual setup step is needed: the one build-time-only Python
+dependency the self-documentation endpoint uses (DESIGN.md §11.1) installs
+itself into the same ESP-IDF-managed Python environment on first build.
+
 More detail
 ===========
 
